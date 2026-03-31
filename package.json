@@ -1,5 +1,5 @@
 {
-  "name": "fastapi-full-stack-template",
+  "name": "Streamdocs",
   "private": true,
   "workspaces": [
     "frontend"

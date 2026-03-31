@@ -1,233 +1,137 @@
-# Full Stack FastAPI Template
+# StreamDocs
 
-<a href="https://github.com/fastapi/full-stack-fastapi-template/actions?query=workflow%3A%22Test+Docker+Compose%22" target="_blank"><img src="https://github.com/fastapi/full-stack-fastapi-template/workflows/Test%20Docker%20Compose/badge.svg" alt="Test Docker Compose"></a>
-<a href="https://github.com/fastapi/full-stack-fastapi-template/actions?query=workflow%3A%22Test+Backend%22" target="_blank"><img src="https://github.com/fastapi/full-stack-fastapi-template/workflows/Test%20Backend/badge.svg" alt="Test Backend"></a>
-<a href="https://coverage-badge.samuelcolvin.workers.dev/redirect/fastapi/full-stack-fastapi-template" target="_blank"><img src="https://coverage-badge.samuelcolvin.workers.dev/fastapi/full-stack-fastapi-template.svg" alt="Coverage"></a>
+StreamDocs is a full-stack document workflow system:
 
-## Technology Stack and Features
+- Upload one or more documents (PDFs supported)
+- Process them asynchronously in the background (Celery worker)
+- Stream near-real-time progress to the UI (Redis Pub/Sub → WebSocket)
+- Review/edit the extracted structured result (JSON)
+- Finalize and export the finalized record as JSON or CSV
 
-- ⚡ [**FastAPI**](https://fastapi.tiangolo.com) for the Python backend API.
-  - 🧰 [SQLModel](https://sqlmodel.tiangolo.com) for the Python SQL database interactions (ORM).
-  - 🔍 [Pydantic](https://docs.pydantic.dev), used by FastAPI, for the data validation and settings management.
-  - 💾 [PostgreSQL](https://www.postgresql.org) as the SQL database.
-- 🚀 [React](https://react.dev) for the frontend.
-  - 💃 Using TypeScript, hooks, [Vite](https://vitejs.dev), and other parts of a modern frontend stack.
-  - 🎨 [Tailwind CSS](https://tailwindcss.com) and [shadcn/ui](https://ui.shadcn.com) for the frontend components.
-  - 🤖 An automatically generated frontend client.
-  - 🧪 [Playwright](https://playwright.dev) for End-to-End testing.
-  - 🦇 Dark mode support.
-- 🐋 [Docker Compose](https://www.docker.com) for development and production.
-- 🔒 Secure password hashing by default.
-- 🔑 JWT (JSON Web Token) authentication.
-- 📫 Email based password recovery.
-- 📬 [Mailcatcher](https://mailcatcher.me) for local email testing during development.
-- ✅ Tests with [Pytest](https://pytest.org).
-- 📞 [Traefik](https://traefik.io) as a reverse proxy / load balancer.
-- 🚢 Deployment instructions using Docker Compose, including how to set up a frontend Traefik proxy to handle automatic HTTPS certificates.
-- 🏭 CI (continuous integration) and CD (continuous deployment) based on GitHub Actions.
+## Tech Stack
 
-### Dashboard Login
+- Backend: FastAPI, SQLModel, PostgreSQL, Redis, Celery
+- Frontend: React + TypeScript (Vite, TanStack Router/Query, Tailwind, shadcn/ui)
+- Tooling: Docker Compose for local dev + prod-like runs, Playwright for E2E tests
 
-[![API docs](img/login.png)](https://github.com/fastapi/full-stack-fastapi-template)
+## Quick Start (Docker)
 
-### Dashboard - Admin
+### Requirements
 
-[![API docs](img/dashboard.png)](https://github.com/fastapi/full-stack-fastapi-template)
+- Docker + Docker Compose
 
-### Dashboard - Items
-
-[![API docs](img/dashboard-items.png)](https://github.com/fastapi/full-stack-fastapi-template)
-
-### Dashboard - Dark Mode
-
-[![API docs](img/dashboard-dark.png)](https://github.com/fastapi/full-stack-fastapi-template)
-
-### Interactive API Documentation
-
-[![API docs](img/docs.png)](https://github.com/fastapi/full-stack-fastapi-template)
-
-## How To Use It
-
-You can **just fork or clone** this repository and use it as is.
-
-✨ It just works. ✨
-
-### How to Use a Private Repository
-
-If you want to have a private repository, GitHub won't allow you to simply fork it as it doesn't allow changing the visibility of forks.
-
-But you can do the following:
-
-- Create a new GitHub repo, for example `my-full-stack`.
-- Clone this repository manually, set the name with the name of the project you want to use, for example `my-full-stack`:
+### Start the stack
 
 ```bash
-git clone git@github.com:fastapi/full-stack-fastapi-template.git my-full-stack
+docker compose watch
 ```
 
-- Enter into the new directory:
+If you don't have Docker Compose "Watch" available, you can use:
 
 ```bash
-cd my-full-stack
+docker compose up -d --build
 ```
 
-- Set the new origin to your new repository, copy it from the GitHub interface, for example:
+The first startup can take a minute (DB init + migrations). To inspect logs:
 
 ```bash
-git remote set-url origin git@github.com:octocat/my-full-stack.git
+docker compose logs -f
 ```
 
-- Add this repo as another "remote" to allow you to get updates later:
+### Local URLs
+
+- Frontend (dashboard): http://localhost:5173
+- Backend (API): http://localhost:8000
+- API docs (Swagger): http://localhost:8000/docs
+- Adminer (DB UI): http://localhost:8080
+- MailCatcher (local email inbox): http://localhost:1080
+- Traefik UI (optional): http://localhost:8090
+
+The Traefik UI is only started if you enable the `traefik` profile:
 
 ```bash
-git remote add upstream git@github.com:fastapi/full-stack-fastapi-template.git
+docker compose --profile traefik up -d
 ```
 
-- Push the code to your new repository:
+### Environment variables
 
-```bash
-git push -u origin master
-```
+Configuration is read from the top-level `.env` file. For deployments, you should override secrets via your CI/CD or server environment.
 
-### Update From the Original Template
-
-After cloning the repository, and after doing changes, you might want to get the latest changes from this original template.
-
-- Make sure you added the original repository as a remote, you can check it with:
-
-```bash
-git remote -v
-
-origin    git@github.com:octocat/my-full-stack.git (fetch)
-origin    git@github.com:octocat/my-full-stack.git (push)
-upstream    git@github.com:fastapi/full-stack-fastapi-template.git (fetch)
-upstream    git@github.com:fastapi/full-stack-fastapi-template.git (push)
-```
-
-- Pull the latest changes without merging:
-
-```bash
-git pull --no-commit upstream master
-```
-
-This will download the latest changes from this template without committing them, that way you can check everything is right before committing.
-
-- If there are conflicts, solve them in your editor.
-
-- Once you are done, commit the changes:
-
-```bash
-git merge --continue
-```
-
-### Configure
-
-You can then update configs in the `.env` files to customize your configurations.
-
-Before deploying it, make sure you change at least the values for:
+At minimum, review/change these before deploying:
 
 - `SECRET_KEY`
-- `FIRST_SUPERUSER_PASSWORD`
 - `POSTGRES_PASSWORD`
+- `FIRST_SUPERUSER_PASSWORD`
 
-You can (and should) pass these as environment variables from secrets.
+## What’s Included
 
-Read the [deployment.md](./deployment.md) docs for more details.
+### Backend workflow
 
-### Generate Secret Keys
+- `POST /api/v1/documents/upload` (multipart `files[]`) creates a `Document` + queues a `ProcessingJob`
+- The worker processes documents and publishes progress updates to Redis
+- The backend exposes a WebSocket that forwards those progress events to the frontend
 
-Some environment variables in the `.env` file have a default value of `changethis`.
+### Live progress WebSocket
 
-You have to change them with a secret key, to generate secret keys you can run the following command:
+- `GET /api/v1/jobs/{job_id}/ws?token=<JWT>`
 
-```bash
-python -c "import secrets; print(secrets.token_urlsafe(32))"
-```
+The frontend uses this to show live progress on a document detail page.
 
-Copy the content and use that as password / secret key. And run that again to generate another secure key.
+### Review, finalize, export
 
-## How To Use It - Alternative With Copier
+- `PUT /api/v1/documents/{document_id}/result` (save edits)
+- `POST /api/v1/documents/{document_id}/finalize`
+- `GET /api/v1/documents/{document_id}/export?format=json|csv` (finalized-only)
 
-This repository also supports generating a new project using [Copier](https://copier.readthedocs.io).
+## Local Development (without Docker)
 
-It will copy all the files, ask you configuration questions, and update the `.env` files with your answers.
+This repo is set up so you can run services locally while keeping the same ports as Docker.
 
-### Install Copier
-
-You can install Copier with:
-
-```bash
-pip install copier
-```
-
-Or better, if you have [`pipx`](https://pipx.pypa.io/), you can run it with:
+### Backend
 
 ```bash
-pipx install copier
+cd backend
+uv sync
+source .venv/bin/activate
+fastapi dev app/main.py
 ```
 
-**Note**: If you have `pipx`, installing copier is optional, you could run it directly.
-
-### Generate a Project With Copier
-
-Decide a name for your new project's directory, you will use it below. For example, `my-awesome-project`.
-
-Go to the directory that will be the parent of your project, and run the command with your project's name:
+### Frontend
 
 ```bash
-copier copy https://github.com/fastapi/full-stack-fastapi-template my-awesome-project --trust
+cd frontend
+bun install
+bun run dev
 ```
 
-If you have `pipx` and you didn't install `copier`, you can run it directly:
+If you want the frontend to talk to a different API, set `VITE_API_URL` (see [frontend/README.md](./frontend/README.md)).
+
+## Tests
+
+### Full-stack (Docker Compose)
 
 ```bash
-pipx run copier copy https://github.com/fastapi/full-stack-fastapi-template my-awesome-project --trust
+bash ./scripts/test.sh
 ```
 
-**Note** the `--trust` option is necessary to be able to execute a [post-creation script](https://github.com/fastapi/full-stack-fastapi-template/blob/master/.copier/update_dotenv.py) that updates your `.env` files.
+### Backend only
 
-### Input Variables
+```bash
+cd backend
+bash ./scripts/test.sh
+```
 
-Copier will ask you for some data, you might want to have at hand before generating the project.
+### Frontend E2E (Playwright)
 
-But don't worry, you can just update any of that in the `.env` files afterwards.
+With the backend running:
 
-The input variables, with their default values (some auto generated) are:
+```bash
+docker compose up -d --wait backend
+cd frontend
+bunx playwright test
+```
 
-- `project_name`: (default: `"FastAPI Project"`) The name of the project, shown to API users (in .env).
-- `stack_name`: (default: `"fastapi-project"`) The name of the stack used for Docker Compose labels and project name (no spaces, no periods) (in .env).
-- `secret_key`: (default: `"changethis"`) The secret key for the project, used for security, stored in .env, you can generate one with the method above.
-- `first_superuser`: (default: `"admin@example.com"`) The email of the first superuser (in .env).
-- `first_superuser_password`: (default: `"changethis"`) The password of the first superuser (in .env).
-- `smtp_host`: (default: "") The SMTP server host to send emails, you can set it later in .env.
-- `smtp_user`: (default: "") The SMTP server user to send emails, you can set it later in .env.
-- `smtp_password`: (default: "") The SMTP server password to send emails, you can set it later in .env.
-- `emails_from_email`: (default: `"info@example.com"`) The email account to send emails from, you can set it later in .env.
-- `postgres_password`: (default: `"changethis"`) The password for the PostgreSQL database, stored in .env, you can generate one with the method above.
-- `sentry_dsn`: (default: "") The DSN for Sentry, if you are using it, you can set it later in .env.
 
-## Backend Development
 
-Backend docs: [backend/README.md](./backend/README.md).
 
-## Frontend Development
 
-Frontend docs: [frontend/README.md](./frontend/README.md).
-
-## Deployment
-
-Deployment docs: [deployment.md](./deployment.md).
-
-## Development
-
-General development docs: [development.md](./development.md).
-
-This includes using Docker Compose, custom local domains, `.env` configurations, etc.
-
-## Release Notes
-
-Check the file [release-notes.md](./release-notes.md).
-
-## License
-
-The Full Stack FastAPI Template is licensed under the terms of the MIT license.

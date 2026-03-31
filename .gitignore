@@ -5,6 +5,7 @@ node_modules/
 /playwright-report/
 /blob-report/
 /playwright/.cache/
+assess.txt
 
 # Env / secrets
 .env
