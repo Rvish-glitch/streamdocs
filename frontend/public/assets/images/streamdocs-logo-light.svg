@@ -1,0 +1,17 @@
+<svg width="320" height="80" viewBox="0 0 320 80" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#00C6FF"></stop>
+      <stop offset="100%" stop-color="#0072FF"></stop>
+    </linearGradient>
+  </defs>
+
+  <!-- Icon -->
+  <path d="M25 55C40 15 70 15 85 55" stroke="url(#g1)" stroke-width="7" fill="none" stroke-linecap="round"></path>
+  <circle cx="55" cy="20" r="6" fill="#0072FF"></circle>
+
+  <!-- Text -->
+  <text x="110" y="48" font-family="Inter, Arial, sans-serif" font-size="28" fill="#111">
+    <tspan font-weight="600">Stream</tspan><tspan fill="#0072FF">Docs</tspan>
+  </text>
+</svg>

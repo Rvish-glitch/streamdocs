@@ -1,0 +1,47 @@
+.vscode/*
+!.vscode/extensions.json
+node_modules/
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+frontend/.env
+backend/.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.Python
+.venv/
+venv/
+ENV/
+env/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+*.log
+
+# Backend runtime artifacts
+backend/app/uploads/
+backend/uploads/
+
+# Frontend build artifacts
+frontend/dist/
+frontend/node_modules/
+frontend/.tanstack/
+frontend/.vite/
+
+# OS
+.DS_Store
+
+# Copier (local scaffolding state)
+.copier/.copier-answers.yml

@@ -1,0 +1,501 @@
+StreamDocs — Implementation Plan + Gap Analysis
+Date: 2026-03-31
+
+Context (what’s in this repo today)
+- This repository is currently based on the “FastAPI full-stack template”.
+- Backend currently implements Users/Auth + Items CRUD (SQLModel) and does not include Celery, Redis, document upload, document processing, progress streaming, retry/finalize/export.
+- Frontend currently implements login/settings/items/admin screens (TanStack Router/Query) and does not include document workflow screens.
+- Docker Compose currently includes: Postgres, backend, frontend, adminer, traefik/mailcatcher/playwright (dev overrides). It does not include Redis or a Celery worker.
+
+Goal
+Build the async document processing workflow system described in the assignment (appendix), using:
+- FastAPI backend + PostgreSQL
+- Celery for background jobs
+- Redis as Celery broker/result backend AND Redis Pub/Sub for progress events (mandatory)
+- A React + TypeScript frontend with live/near-real-time progress
+
+Non-goals (to keep scope tight)
+- Advanced OCR/LLM extraction quality (we will simulate/keep it simple)
+- Multi-tenant orgs/roles beyond the existing user auth
+- Production file storage (S3/GCS). Local filesystem volume is acceptable for the assignment.
+
+
+1) Architecture (end-to-end)
+
+Services
+- backend: FastAPI API server
+- db: PostgreSQL
+- redis: Redis (Celery broker + result backend + Pub/Sub)
+- worker: Celery worker (runs processing pipeline)
+- frontend: React app
+
+Core data flow
+1. User uploads 1..N files via frontend.
+2. Backend stores file (local storage) + creates Document row + ProcessingJob row (status=QUEUED).
+3. Backend enqueues Celery task for each uploaded document.
+4. Worker processes a multi-step pipeline and publishes progress events via Redis Pub/Sub.
+5. Backend streams progress to frontend via WebSocket (recommended) or SSE.
+6. When complete, user reviews extracted output in detail view, edits, finalizes.
+7. User exports finalized record as JSON/CSV.
+
+
+2) Data model (PostgreSQL via SQLModel)
+
+Use explicit tables for documents + jobs to support list filters/search/sorting and retries.
+
+Enums
+- JobStatus: QUEUED | PROCESSING | COMPLETED | FAILED
+- ReviewStatus: DRAFT | FINAL
+
+Tables (minimum)
+
+Document
+- id (UUID, PK)
+- owner_id (FK -> user.id)
+- original_filename (string)
+- content_type (string nullable)
+- size_bytes (int)
+- storage_path (string)  # local disk path or key
+- checksum_sha256 (string nullable)  # optional for idempotency
+- created_at, updated_at (UTC)
+
+ProcessingJob
+- id (UUID, PK)
+- document_id (FK -> document.id)
+- owner_id (FK -> user.id)  # denormalized for easy access checks
+- celery_task_id (string nullable)
+- status (JobStatus)
+- progress (int 0..100)
+- current_stage (string nullable)  # e.g. "parsing", "extracting"
+- error_message (string nullable)
+- attempts (int)
+- started_at, finished_at (UTC nullable)
+- created_at, updated_at (UTC)
+
+ExtractionResult
+- id (UUID, PK)
+- document_id (FK)
+- job_id (FK)
+- raw_text (text nullable)  # optional
+- extracted_json (JSONB)  # editable structured result
+- review_status (ReviewStatus)  # DRAFT until finalized
+- finalized_at (UTC nullable)
+- created_at, updated_at (UTC)
+
+Indexes
+- ProcessingJob(status, created_at)
+- Document(owner_id, created_at)
+- (Optional) full text search index for filename/title, depending on scope
+
+
+3) Background processing (Celery + Redis Pub/Sub)
+
+Celery configuration
+- Broker: Redis URL (e.g. redis://redis:6379/0)
+- Result backend: Redis URL (e.g. redis://redis:6379/1)
+- Task routing: one queue is fine (e.g. "documents")
+
+Pipeline stages (simulate real async workflow)
+Stage 0: job_queued
+Stage 1: job_started
+Stage 2: document_parsing_started
+Stage 3: document_parsing_completed
+Stage 4: field_extraction_started
+Stage 5: field_extraction_completed
+Stage 6: final_result_stored
+Stage 7: job_completed OR job_failed
+
+Progress events (Redis Pub/Sub)
+- Channel naming: progress:{job_id}
+- Message JSON schema:
+	{
+		"job_id": "...",
+		"document_id": "...",
+		"status": "PROCESSING",
+		"stage": "document_parsing_started",
+		"progress": 25,
+		"ts": "2026-03-31T12:34:56Z",
+		"message": "..."  # human readable
+	}
+
+Worker responsibilities
+- Update DB job status/progress/stage consistently (source of truth)
+- Publish Pub/Sub events at each stage
+- Store extracted output into ExtractionResult
+- On error: set status=FAILED, publish job_failed event with error
+
+Retry strategy
+- Backend “retry” endpoint increments attempts and re-enqueues a new Celery task.
+- Keep previous job record and create a new ProcessingJob OR reuse same row.
+	- Recommended for auditability: create a new ProcessingJob row linked to same document, mark old one as FAILED.
+- Idempotency: use checksum + unique constraint if you want “same file same doc” behavior (optional).
+
+
+4) Backend API design (FastAPI)
+
+Auth
+- Reuse the template’s JWT auth.
+- All document/job endpoints require authentication.
+
+Endpoints (suggested)
+
+Upload
+- POST /api/v1/documents/upload
+	- multipart/form-data with files[]
+	- returns: list of created documents + jobs
+
+List / dashboard
+- GET /api/v1/documents
+	- query: q (search), status, sort, order, skip, limit
+	- returns: documents with latest job status/progress
+
+Detail
+- GET /api/v1/documents/{document_id}
+	- returns: document metadata + latest job + extraction result
+
+Progress streaming
+- WebSocket: GET /api/v1/jobs/{job_id}/ws
+	- Backend subscribes to Redis Pub/Sub progress:{job_id} and forwards messages to the client.
+	- On connect: send current DB snapshot first (status/progress/stage) so UI has immediate state.
+- Alternative (acceptable): SSE: GET /api/v1/jobs/{job_id}/events
+
+Retry
+- POST /api/v1/jobs/{job_id}/retry
+	- only allowed if status=FAILED
+
+Review/edit result
+- PUT /api/v1/documents/{document_id}/result
+	- body: extracted_json updates (partial or full)
+	- only allowed when job COMPLETED
+
+Finalize
+- POST /api/v1/documents/{document_id}/finalize
+	- sets review_status=FINAL, finalized_at=now
+	- blocks further edits after finalization (recommended)
+
+Export
+- GET /api/v1/documents/{document_id}/export?format=json|csv
+	- only allowed when review_status=FINAL
+	- returns file download (CSV) or JSON response
+
+Implementation notes
+- Keep request handlers thin: validate + create DB rows + enqueue Celery tasks.
+- Put business logic into service modules (e.g. app/services/documents.py).
+- Put Celery app + tasks in a dedicated worker module (e.g. app/worker/celery_app.py, app/worker/tasks.py).
+- Use Pydantic schemas/DTOs for API responses instead of returning ORM models directly for complex nested shapes.
+
+
+5) Progress streaming design (Backend)
+
+Why WebSocket
+- Matches “live progress” requirement well.
+- Simple for frontend to consume.
+
+WebSocket implementation approach
+- On WS connect:
+	1) Authenticate (JWT from query param or Authorization header)
+	2) Check permissions (job.owner_id == current_user.id OR superuser)
+	3) Subscribe to Redis channel progress:{job_id}
+	4) Forward messages to client
+- On disconnect: unsubscribe and clean up.
+
+Scaling note (not required but good practice)
+- For multiple backend instances, each instance will independently subscribe for its WS clients.
+- Redis Pub/Sub supports this naturally.
+
+
+6) Frontend UX plan (React + TypeScript)
+
+Routes/pages
+- /documents (Dashboard)
+	- Upload button
+	- Search box (filename/title)
+	- Filter dropdown (Queued/Processing/Completed/Failed)
+	- Sorting (created_at desc default, maybe filename)
+	- Table/list rows show status + progress bar
+- /documents/upload (Upload screen) OR inline upload dialog on dashboard
+	- Multi-file picker + submit
+- /documents/{id} (Detail / Review)
+	- Document metadata
+	- Live job progress (connect to WS if job not terminal)
+	- Extracted structured fields form (editable)
+	- Actions:
+		- Save edits (DRAFT)
+		- Finalize
+		- Retry (only if FAILED)
+		- Export JSON / Export CSV (only if FINAL)
+
+State/data
+- Use TanStack Query for REST data (list/detail, save edits, finalize, retry).
+- Use a small WS hook for progress events, updating query cache for the job/document.
+
+UI components
+- Reuse existing shadcn/ui components in the template.
+- Keep the design consistent with existing layout/sidebar.
+
+
+7) Docker Compose changes
+
+compose.yml
+- Add a redis service
+- Add a worker service
+	- same backend image (or separate) but command: celery worker
+- Ensure backend and worker receive REDIS_URL and Celery settings via env
+
+compose.override.yml
+- Expose redis port for local debugging (optional)
+- Ensure live reload does not affect worker (optional)
+
+
+8) Env vars / configuration
+
+Add to backend settings
+- REDIS_URL
+- CELERY_BROKER_URL
+- CELERY_RESULT_BACKEND
+- PROGRESS_CHANNEL_PREFIX (default: "progress")
+- FILE_STORAGE_DIR (default: /app/data/uploads)
+- MAX_UPLOAD_SIZE_MB (optional)
+
+
+9) Testing plan
+
+Backend
+- Unit tests:
+	- Upload creates Document + ProcessingJob and enqueues Celery task (mock enqueue)
+	- Retry only works for FAILED jobs
+	- Finalize blocks edits afterwards
+	- Export JSON/CSV for FINAL results
+- Worker tests:
+	- Task writes DB updates and publishes progress events (use a Redis test instance or mock)
+
+Frontend
+- Basic page-level tests (optional)
+- Playwright E2E (best):
+	- login -> upload -> observe progress -> edit -> finalize -> export
+
+
+10) Milestones (12–16 hour execution plan)
+
+Milestone A — Data + plumbing (2–3h)
+- Add models/migrations for Document, ProcessingJob, ExtractionResult
+- Add redis + worker to docker compose
+- Add celery + redis dependencies/config
+
+Milestone B — Upload + enqueue (2–3h)
+- Implement upload endpoint and local file storage
+- Enqueue Celery task per file
+- Implement list + detail endpoints
+
+Milestone C — Worker pipeline + progress events (3–4h)
+- Implement Celery task stages
+- DB status/progress updates
+- Redis Pub/Sub publish at each stage
+
+Milestone D — Progress streaming to UI (2–3h)
+- WebSocket endpoint bridging Redis Pub/Sub
+- Frontend WS hook + progress UI
+
+Milestone E — Review/finalize/export/retry (2–3h)
+- Edit extracted_json + finalize
+- Export JSON + CSV
+- Retry failed jobs
+
+Milestone F — Docs + demo polish (1–2h)
+- Update README to describe StreamDocs, run steps, architecture
+- Add sample files + sample exports
+- Record 3–5 minute demo
+
+
+11) Gap analysis (repo vs assignment + “project description”)
+
+Gaps vs mandatory technical requirements
+- Missing Celery integration (no celery app, no worker process, no celery deps).
+- Missing Redis service and Redis Pub/Sub progress events.
+- Missing “background processing must not run in request-response cycle” implementation (no async jobs exist yet).
+
+Gaps vs mandatory product features
+- No document upload endpoint or frontend upload UI.
+- No Document/Job persistence model; current DB models are User/Item only.
+- No job state machine (Queued/Processing/Completed/Failed) exposed to UI.
+- No live/near-real-time progress (no WS/SSE/polling, no progress event stream).
+- No document dashboard (search/filter/sort by status).
+- No document detail review/edit screen.
+- No finalize workflow.
+- No retry for failed jobs.
+- No export to JSON/CSV.
+
+Gaps in current “project description” (docs)
+- Root README.md is still the generic template README and does not describe StreamDocs, the async workflow, Celery/Redis, or the required endpoints.
+- No architecture overview diagram or explanation of progress streaming.
+- No demo instructions/video link, sample files, or sample exported outputs referenced.
+
+Gaps / risks to call out early
+- File storage decision not documented (local disk vs object storage).
+- Idempotency and retry semantics not defined (reuse job row vs new job row).
+- Progress event schema and terminal behavior (disconnect/reconnect) not defined.
+- Access control: whether users can see only their own documents/jobs (recommended).
+
+
+Appendix — Original Assignment Spec (verbatim)
+
+Title: Build an Async Document Processing Workflow System
+Assignment Type: Full Stack
+Expected Time: 12-16 hours
+Submission Window: 3-4 days
+Objective
+Build a small production-style full stack application where users can upload documents, trigger
+background processing, track progress live, review extracted output, edit/finalize results, and export
+processed data.
+The purpose of this assignment is to evaluate how well you design and implement a real-world
+asynchronous workflow using modern backend and frontend engineering practices.
+Mandatory Technology Requirements
+Frontend: React or Next.js with TypeScript
+Backend: Python with FastAPI
+Database: PostgreSQL
+Background processing: Celery
+Messaging / state: Redis
+Background processing must not run in the request-response cycle
+Progress tracking must be implemented
+Celery + Redis Pub/Sub is mandatory
+Problem Statement
+Users should be able to upload one or more documents into the system. Each uploaded document must
+create a processing job that is handled asynchronously by background workers. The system should
+publish progress events while processing is happening and allow users to track status from the
+frontend.
+Once processing is completed, users should be able to review the extracted structured output, make
+edits if required, finalize the record, and export the final result.
+Mandatory Features
+1. Upload one or more documents.
+2. Save document metadata and job details in PostgreSQL.
+3. Create a background processing job using Celery .
+4. Use Redis Pub/Sub to publish processing progress events from worker to application layer.
+5. Display job states clearly:
+Queued
+Processing
+Completed
+Failed
+6. Show live or near-real-time progress in frontend.
+7. Implement a document list/dashboard with:
+search
+filter by status
+sorting
+8. Build a document detail page where the processed output can be reviewed and edited.
+9. Allow finalization of reviewed output.
+10. Support retry for failed jobs.
+11. Export finalized records as JSON and CSV .
+Document Processing Flow
+Each document should follow a multi-step background workflow.
+You may simulate the business logic if needed, but the async architecture must be real.
+Suggested processing stages:
+document received
+parsing started
+parsing completed
+extraction started
+extraction completed
+final result stored
+job completed / failed
+Minimum Processing Logic
+The processing itself can be simple, for example:
+extract metadata such as filename, file type, size
+parse text from the file or mock parsed content
+generate structured fields such as:
+title
+category
+summary
+extracted keywords
+status
+store final JSON result in database
+You are not being evaluated on advanced AI or OCR quality here.
+You are being evaluated on system design, async workflow execution, and implementation quality.
+Architecture Expectations
+Your solution should contain:
+frontend application
+FastAPI backend
+PostgreSQL persistence
+Celery worker
+Redis for broker and Pub/Sub progress updates
+A clean architecture is expected. For example:
+API routes for upload, list, detail, retry, finalize, export
+service layer for business logic
+worker layer for async processing
+clear models / schemas / DTOs
+separation between synchronous API handling and background execution
+Progress Tracking Requirement
+Workers must publish progress events during execution using Redis Pub/Sub .
+Your app may consume and expose these updates using either:
+WebSocket
+Server-Sent Events
+polling with Redis-backed status reads
+Any of the above is acceptable, but progress visibility is mandatory.
+Suggested Progress Events
+You may use events like:
+job_queued
+job_started
+document_parsing_started
+document_parsing_completed
+field_extraction_started
+field_extraction_completed
+job_completed
+job_failed
+Expected API Surface
+Your backend should include endpoints similar to:
+upload document(s)
+list all jobs/documents
+get document/job details
+stream or fetch progress
+retry failed job
+update reviewed result
+finalize result
+export results
+You are free to define the exact API design.
+Frontend Expectations
+Your frontend should include:
+upload screen
+jobs dashboard
+progress/status visibility
+detail/review screen
+edit/finalize workflow
+export action
+UI does not need to be fancy, but should be clear, usable, and well-structured.
+Submission Requirements
+Please submit:
+GitHub repository link
+README.md including:
+setup instructions
+architecture overview
+run steps
+assumptions
+tradeoffs
+limitations
+short demo video of 3-5 minutes [*MUST]
+sample files used for testing
+sample exported outputs
+clear note if AI tools were used during development
+Evaluation Criteria
+We will evaluate on:
+correctness of async workflow
+proper use of Celery.
+proper use of Redis Pub/Sub
+backend API design
+frontend-backend integration
+database design
+progress tracking implementation
+error handling and retry strategy
+code readability and maintainability
+documentation quality
+overall engineering maturity
+Bonus Points
+Docker Compose setup
+tests
+authentication
+idempotent retry handling
+cancellation support
+file storage abstraction
+clean deployment-ready structure
+thoughtful handling of large files or edge cases
+Important Notes
+Background processing is mandatory.
+Do not process documents directly inside request handlers.
+Do not build this as a purely synchronous CRUD application.
+Simpler processing logic is acceptable if the system design is strong.
