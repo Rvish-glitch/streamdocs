@@ -43,8 +43,7 @@ ENV UV_COMPILE_BYTECODE=1 \
 
 # Install Python deps (workspace) using uv.lock + pyproject.toml from repo root
 COPY uv.lock pyproject.toml /app/
-RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
-    uv sync --frozen --no-install-workspace --package app
+RUN uv sync --frozen --no-install-workspace --package app
 
 # Copy backend code
 COPY backend/scripts /app/backend/scripts
@@ -52,8 +51,7 @@ COPY backend/pyproject.toml backend/alembic.ini /app/backend/
 COPY backend/app /app/backend/app
 
 # Sync the full project (includes backend package)
-RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
-    uv sync --frozen --package app
+RUN uv sync --frozen --package app
 
 # Frontend artifacts + nginx config
 COPY --from=frontend-build /app/frontend/dist/ /usr/share/nginx/html/
