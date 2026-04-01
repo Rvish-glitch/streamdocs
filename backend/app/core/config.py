@@ -76,6 +76,12 @@ class Settings(BaseSettings):
     # This avoids long-running/stuck PDFs holding the worker indefinitely.
     PARSING_TOTAL_TIMEOUT_SECONDS: int = 30
 
+    # Celery hard kill timeout (should be > soft limit to allow cleanup/retry).
+    PARSING_TOTAL_HARD_TIMEOUT_SECONDS: int = 35
+    # Retry behavior when soft time limit is exceeded.
+    PARSING_TASK_RETRY_COUNTDOWN_SECONDS: int = 5
+    PARSING_TASK_MAX_RETRIES: int = 3
+
     REDIS_URL: str = "redis://redis:6379/0"
     CELERY_BROKER_URL: str | None = None
     CELERY_RESULT_BACKEND: str | None = None
