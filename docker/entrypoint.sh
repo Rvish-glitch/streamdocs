@@ -12,6 +12,8 @@ fi
 
 cd /app/backend
 
+mkdir -p "${UPLOAD_DIR:-/app/backend/data/uploads}"
+
 # Run DB readiness + migrations + initial data (same as docker-compose "prestart" service)
 # in the background so the service can bind ports quickly on platforms like Render.
 if [[ "${RUN_PRESTART:-1}" == "1" ]]; then

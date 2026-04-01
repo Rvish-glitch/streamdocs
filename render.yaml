@@ -1,31 +1,17 @@
-databases:
-  - name: streamdocs-db
-    databaseName: app
-    user: streamdocs
-    postgresMajorVersion: "18"
-
 services:
-  # Redis-compatible datastore (Render Key Value)
-  - type: keyvalue
-    name: streamdocs-kv
-    # Restrict external access; Render services can still use the internal URL.
-    ipAllowList: []
-    plan: starter
-
-  # Single-service deployment: nginx (frontend) + FastAPI (API) + Celery worker
-  # This avoids shared-files issues between web/worker because uploads are stored on disk.
+  # Free-tier deployment: single web service only.
+  # Notes:
+  # - No Render-managed Postgres/Key Value resources in this Blueprint.
+  # - No persistent disk on free tier; uploads use ephemeral filesystem.
   - type: web
     name: streamdocs
     runtime: docker
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    plan: starter
+    plan: free
+    region: virginia
     numInstances: 1
     healthCheckPath: /api/v1/utils/health-check/
-    disk:
-      name: streamdocs-data
-      mountPath: /app/backend/data
-      sizeGB: 10
     envVars:
       - key: ENVIRONMENT
         value: production
@@ -40,42 +26,17 @@ services:
       - key: FIRST_SUPERUSER_PASSWORD
         sync: false
 
-      # Database connection (Render Postgres)
+      # Database connection (external Postgres)
       - key: DATABASE_URL
-        fromDatabase:
-          name: streamdocs-db
-          property: connectionString
-      - key: POSTGRES_SERVER
-        fromDatabase:
-          name: streamdocs-db
-          property: host
-      - key: POSTGRES_PORT
-        fromDatabase:
-          name: streamdocs-db
-          property: port
-      - key: POSTGRES_DB
-        fromDatabase:
-          name: streamdocs-db
-          property: database
-      - key: POSTGRES_USER
-        fromDatabase:
-          name: streamdocs-db
-          property: user
-      - key: POSTGRES_PASSWORD
-        fromDatabase:
-          name: streamdocs-db
-          property: password
+        sync: false
 
-      # Redis / Celery broker+backend
+      # Redis / Celery broker+backend (external Redis/Valkey)
       - key: REDIS_URL
-        fromService:
-          name: streamdocs-kv
-          type: keyvalue
-          property: connectionString
+        sync: false
 
       # Uploads
       - key: UPLOAD_DIR
-        value: /app/backend/data/uploads
+        value: /tmp/uploads
 
       # App URLs (set to your final Render URL or custom domain)
       - key: FRONTEND_HOST
