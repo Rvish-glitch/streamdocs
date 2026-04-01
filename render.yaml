@@ -1,0 +1,86 @@
+databases:
+  - name: streamdocs-db
+    databaseName: app
+    user: streamdocs
+    postgresMajorVersion: "18"
+
+services:
+  # Redis-compatible datastore (Render Key Value)
+  - type: keyvalue
+    name: streamdocs-kv
+    # Restrict external access; Render services can still use the internal URL.
+    ipAllowList: []
+    plan: starter
+
+  # Single-service deployment: nginx (frontend) + FastAPI (API) + Celery worker
+  # This avoids shared-files issues between web/worker because uploads are stored on disk.
+  - type: web
+    name: streamdocs
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: starter
+    numInstances: 1
+    healthCheckPath: /api/v1/utils/health-check/
+    disk:
+      name: streamdocs-data
+      mountPath: /app/backend/data
+      sizeGB: 10
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: PROJECT_NAME
+        value: StreamDocs
+
+      # Secrets
+      - key: SECRET_KEY
+        generateValue: true
+      - key: FIRST_SUPERUSER
+        value: admin@streamdocs.com
+      - key: FIRST_SUPERUSER_PASSWORD
+        sync: false
+
+      # Database connection (Render Postgres)
+      - key: POSTGRES_SERVER
+        fromDatabase:
+          name: streamdocs-db
+          property: host
+      - key: POSTGRES_PORT
+        fromDatabase:
+          name: streamdocs-db
+          property: port
+      - key: POSTGRES_DB
+        fromDatabase:
+          name: streamdocs-db
+          property: database
+      - key: POSTGRES_USER
+        fromDatabase:
+          name: streamdocs-db
+          property: user
+      - key: POSTGRES_PASSWORD
+        fromDatabase:
+          name: streamdocs-db
+          property: password
+
+      # Redis / Celery broker+backend
+      - key: REDIS_URL
+        fromService:
+          name: streamdocs-kv
+          type: keyvalue
+          property: connectionString
+
+      # Uploads
+      - key: UPLOAD_DIR
+        value: /app/backend/data/uploads
+
+      # App URLs (set to your final Render URL or custom domain)
+      - key: FRONTEND_HOST
+        sync: false
+
+      # Optional: skip prestart if you ever need a “no-migrations” deploy
+      # - key: RUN_PRESTART
+      #   value: "1"
+
+      # Optional: tune worker concurrency
+      # - key: CELERY_WORKER_CONCURRENCY
+      #   value: "2"
