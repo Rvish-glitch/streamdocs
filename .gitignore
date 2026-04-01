@@ -14,6 +14,10 @@ assess.txt
 frontend/.env
 backend/.env
 
+# Local env tooling
+.envrc
+.direnv/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -34,6 +38,8 @@ htmlcov/
 # Backend runtime artifacts
 backend/app/uploads/
 backend/uploads/
+backend/data/
+data/uploads/
 
 # Frontend build artifacts
 frontend/dist/
@@ -43,6 +49,11 @@ frontend/.vite/
 
 # OS
 .DS_Store
+
+# IDE / editor
+.idea/
+*.swp
+*.swo
 
 # Copier (local scaffolding state)
 .copier/.copier-answers.yml

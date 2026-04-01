@@ -32,6 +32,39 @@ If you don't have Docker Compose "Watch" available, you can use:
 docker compose up -d --build
 ```
 
+### Single-image option (app only)
+
+This repo also includes a root [Dockerfile](Dockerfile) that builds **one container** running:
+
+- Nginx (serves the built frontend)
+- FastAPI backend API
+- Celery worker
+
+You still need **Postgres + Redis** separately (e.g. via Docker Compose).
+
+Build:
+
+```bash
+docker build -t streamdocs-all-in-one .
+```
+
+Run (example; adapt env vars to your setup):
+
+```bash
+docker run --rm -p 8080:80 \
+	-e ENVIRONMENT=production \
+	-e PROJECT_NAME=StreamDocs \
+	-e SECRET_KEY=changeme \
+	-e FIRST_SUPERUSER=admin@streamdocs.com \
+	-e FIRST_SUPERUSER_PASSWORD=changeme \
+	-e POSTGRES_SERVER=host.docker.internal \
+	-e POSTGRES_USER=postgres \
+	-e POSTGRES_PASSWORD=postgres \
+	-e POSTGRES_DB=app \
+	-e REDIS_URL=redis://host.docker.internal:6379/0 \
+	streamdocs-all-in-one
+```
+
 The first startup can take a minute (DB init + migrations). To inspect logs:
 
 ```bash
