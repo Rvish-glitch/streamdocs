@@ -50,9 +50,15 @@ class Settings(BaseSettings):
 
     PROJECT_NAME: str
     SENTRY_DSN: HttpUrl | None = None
-    POSTGRES_SERVER: str
+    # Prefer DATABASE_URL in managed environments (Render, Heroku, etc.)
+    # Format examples:
+    # - postgresql://user:pass@host:5432/db
+    # - postgres://user:pass@host:5432/db (will be normalized)
+    DATABASE_URL: str | None = None
+
+    POSTGRES_SERVER: str | None = None
     POSTGRES_PORT: int = 5432
-    POSTGRES_USER: str
+    POSTGRES_USER: str | None = None
     POSTGRES_PASSWORD: str = ""
     POSTGRES_DB: str = ""
 
@@ -73,6 +79,19 @@ class Settings(BaseSettings):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def SQLALCHEMY_DATABASE_URI(self) -> PostgresDsn:
+        if self.DATABASE_URL:
+            url = self.DATABASE_URL
+            if url.startswith("postgres://"):
+                url = "postgresql+psycopg://" + url[len("postgres://") :]
+            elif url.startswith("postgresql://"):
+                url = "postgresql+psycopg://" + url[len("postgresql://") :]
+            return PostgresDsn(url)
+
+        if not self.POSTGRES_SERVER or not self.POSTGRES_USER or not self.POSTGRES_DB:
+            raise ValueError(
+                "Database config missing: set DATABASE_URL, or set POSTGRES_SERVER, POSTGRES_USER, and POSTGRES_DB"
+            )
+
         return PostgresDsn.build(
             scheme="postgresql+psycopg",
             username=self.POSTGRES_USER,

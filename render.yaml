@@ -41,6 +41,10 @@ services:
         sync: false
 
       # Database connection (Render Postgres)
+      - key: DATABASE_URL
+        fromDatabase:
+          name: streamdocs-db
+          property: connectionString
       - key: POSTGRES_SERVER
         fromDatabase:
           name: streamdocs-db
