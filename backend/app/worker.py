@@ -3,6 +3,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any
 import time
+import multiprocessing as mp
 
 import pdfplumber
 
@@ -49,6 +50,15 @@ EVENT_PROGRESS = {
     "completed": 100,
     "job_failed": 100,
 }
+
+
+def _pdfplumber_parse_worker(storage_path: str, out_q: "mp.Queue[dict[str, Any]]") -> None:
+    """Run pdfplumber parsing in an isolated process so we can hard-kill hangs."""
+    try:
+        text = _parse_pdf_text(storage_path)
+        out_q.put({"ok": True, "text": text})
+    except Exception as e:  # noqa: BLE001
+        out_q.put({"ok": False, "error": f"{type(e).__name__}: {e}"})
 
 
 def _utc_now() -> datetime:
@@ -102,60 +112,19 @@ def _parse_pdf_text(storage_path: str) -> str:
 
 def _parse_pdf_text_with_progress(job: ProcessingJob, storage_path: str, session: Session) -> str:
     import re
-    import signal
-    from contextlib import contextmanager
 
     parsing_start = EVENT_PROGRESS["parsing_started"]
     parsing_end = EVENT_PROGRESS["parsing_completed"]
 
-    # Optional artificial slowdown (demo/testing)
-    size_bytes = 0
-    try:
-        size_bytes = Path(storage_path).stat().st_size
-    except Exception:  # noqa: BLE001
-        size_bytes = 0
-
-    seconds_per_100kb = float(getattr(settings, "PARSING_SECONDS_PER_100KB", 0.0) or 0.0)
-    min_seconds = float(getattr(settings, "PARSING_MIN_SECONDS", 0.0) or 0.0)
-    target_seconds = 0.0
-    if seconds_per_100kb > 0:
-        target_seconds = max(min_seconds, seconds_per_100kb * (size_bytes / 100_000.0))
-
-    publish_every_n_lines = int(
-        getattr(settings, "PARSING_PROGRESS_PUBLISH_EVERY_N_LINES", 1) or 1
-    )
-    if publish_every_n_lines < 1:
-        publish_every_n_lines = 1
+    # Hard timeout for the entire PDF parsing step.
+    # We enforce this by running parsing in a child process and killing it.
+    total_timeout_s = int(getattr(settings, "PARSING_TOTAL_TIMEOUT_SECONDS", 30) or 30)
+    if total_timeout_s < 1:
+        total_timeout_s = 30
 
     last_commit_at = time.monotonic()
 
-    # Some PDFs can cause pdfplumber/pdfminer to hang (especially on specific pages).
-    # Guard with timeouts so a single bad document doesn't stick at ~38% forever.
-    open_timeout_s = int(getattr(settings, "PARSING_OPEN_TIMEOUT_SECONDS", 20) or 20)
-    page_timeout_s = int(getattr(settings, "PARSING_PAGE_TIMEOUT_SECONDS", 20) or 20)
-    if open_timeout_s < 1:
-        open_timeout_s = 20
-    if page_timeout_s < 1:
-        page_timeout_s = 20
-
-    class _Timeout(Exception):
-        pass
-
-    @contextmanager
-    def _time_limit(seconds: int):
-        def _handler(signum, frame):  # noqa: ARG001
-            raise _Timeout()
-
-        previous = signal.signal(signal.SIGALRM, _handler)
-        signal.setitimer(signal.ITIMER_REAL, float(seconds))
-        try:
-            yield
-        finally:
-            signal.setitimer(signal.ITIMER_REAL, 0)
-            signal.signal(signal.SIGALRM, previous)
-
-    # If pdfplumber.open() is slow/hangs on some PDFs, bump progress and persist it
-    # before entering pdfplumber so the UI doesn't sit forever at exactly 30%.
+    # Bump progress and persist it before entering parsing so the UI doesn't sit forever at exactly 30%.
     opening_progress = min(parsing_end - 1, parsing_start + 1)
     job.progress = max(int(job.progress or parsing_start), opening_progress)
     job.updated_at = _utc_now()
@@ -164,145 +133,57 @@ def _parse_pdf_text_with_progress(job: ProcessingJob, storage_path: str, session
     last_commit_at = time.monotonic()
     _publish(job, message="Opening PDF")
 
-    # First pass: extract per-page text and count lines.
-    # This can take time on some PDFs, so emit coarse progress during scanning
-    # to avoid looking stuck at exactly parsing_started.
-    page_lines: list[list[str]] = []
-    try:
-        with _time_limit(open_timeout_s):
-            pdf_ctx = pdfplumber.open(storage_path)
-    except _Timeout:
-        _publish(job, message=f"Timed out opening PDF after {open_timeout_s}s")
-        return ""
-
-    with pdf_ctx as pdf:
-        total_pages = len(pdf.pages)
-        for idx, page in enumerate(pdf.pages, start=1):
-            # Persist an update *before* extraction of each page, because
-            # page.extract_text() can take a long time on some PDFs.
-            if total_pages > 0:
-                frac_pages = (idx - 1) / total_pages
-                progress_exact = parsing_start + ((parsing_end - parsing_start) * 0.5 * frac_pages)
-                job.progress = max(
-                    int(progress_exact),
-                    int(job.progress or parsing_start),
-                    parsing_start,
-                )
-            job.updated_at = _utc_now()
-            session.add(job)
-            session.commit()
-            last_commit_at = time.monotonic()
-            if total_pages > 0:
-                _publish(job, message=f"Extracting PDF page {idx}/{total_pages}")
-
-            try:
-                with _time_limit(page_timeout_s):
-                    page_text = page.extract_text(layout=True) or ""
-                if not page_text:
-                    with _time_limit(page_timeout_s):
-                        page_text = page.extract_text() or ""
-            except _Timeout:
-                _publish(
-                    job,
-                    message=(
-                        f"Timed out extracting page {idx}/{total_pages} after {page_timeout_s}s; skipping"
-                    ),
-                )
-                page_text = ""
-            except Exception as e:  # noqa: BLE001
-                _publish(
-                    job,
-                    message=(
-                        f"Error extracting page {idx}/{total_pages}: {e!s}; skipping"
-                    ),
-                )
-                page_text = ""
-
-            page_text = page_text.replace("\r\n", "\n").replace("\r", "\n")
-            page_text = re.sub(r"-\n(?=\w)", "", page_text)
-            page_text = re.sub(r"[\t\f\v]+", " ", page_text)
-            page_text = re.sub(r"[ ]{2,}", " ", page_text)
-            page_text = re.sub(r"\n{3,}", "\n\n", page_text)
-            lines = [ln.strip() for ln in page_text.splitlines() if ln.strip()]
-            page_lines.append(lines)
-
-            # Coarse progress: 30% -> up to just under 50% while scanning pages.
-            if total_pages > 0:
-                frac_pages = idx / total_pages
-                progress_exact = parsing_start + ((parsing_end - parsing_start) * 0.5 * frac_pages)
-                job.progress = max(int(progress_exact), int(job.progress or parsing_start), parsing_start)
-                job.updated_at = _utc_now()
-                # Commit at most ~1/s (reuse existing cadence)
-                now = time.monotonic()
-                if now - last_commit_at >= 1.0:
-                    session.add(job)
-                    session.commit()
-                    last_commit_at = now
-                    _publish(job, message=f"Scanning PDF pages {idx}/{total_pages}")
-
-    total_lines = sum(len(lines) for lines in page_lines)
-    if total_lines <= 0:
-        return ""
-
-    # Second pass: build readable output and emit incremental progress.
-    out_pages: list[str] = []
-    done = 0
-    last_sent_progress = int(job.progress or parsing_start)
-    last_commit_at = time.monotonic()
-    start_at = time.monotonic()
-
     job.current_stage = "parsing_started"
     session.add(job)
     session.commit()
     _publish(job, message="Parsing in progress")
 
-    for page_idx, lines in enumerate(page_lines, start=1):
-        if not lines:
-            continue
-        out_pages.append(f"--- Page {page_idx} ---")
-        for line in lines:
-            out_pages.append(line)
-            done += 1
+    ctx = mp.get_context("spawn")
+    out_q: "mp.Queue[dict[str, Any]]" = ctx.Queue(maxsize=1)
+    proc = ctx.Process(target=_pdfplumber_parse_worker, args=(storage_path, out_q), daemon=True)
 
-            frac = done / total_lines
-            progress_exact = parsing_start + ((parsing_end - parsing_start) * frac)
-            progress_exact = min(progress_exact, (parsing_end - 0.1))
-            progress = int(progress_exact)
-            progress = min(max(progress, parsing_start), parsing_end - 1)
+    start = time.monotonic()
+    proc.start()
 
-            now = time.monotonic()
+    # Heartbeat progress while waiting. We don't have per-page progress anymore,
+    # but this keeps the UI from looking frozen.
+    while proc.is_alive():
+        elapsed = time.monotonic() - start
+        if elapsed >= total_timeout_s:
+            proc.terminate()
+            proc.join(timeout=2.0)
+            if getattr(proc, "is_alive")() and hasattr(proc, "kill"):
+                proc.kill()  # type: ignore[attr-defined]
+                proc.join(timeout=2.0)
+            raise TimeoutError(f"PDF parsing exceeded {total_timeout_s}s")
 
-            # Artificial slowdown: keep pace so total parsing duration ~= target_seconds
-            if target_seconds > 0:
-                expected_elapsed = target_seconds * frac
-                elapsed = now - start_at
-                if elapsed < expected_elapsed:
-                    # Sleep a bit; keep small sleeps for responsiveness.
-                    time.sleep(min(expected_elapsed - elapsed, 0.05))
+        now = time.monotonic()
+        if now - last_commit_at >= 1.0:
+            # Move progress gently toward parsing_end-1 as time elapses.
+            frac = min(0.99, elapsed / float(total_timeout_s))
+            progress_exact = parsing_start + ((parsing_end - parsing_start - 1) * frac)
+            job.progress = max(int(progress_exact), int(job.progress or parsing_start))
+            job.updated_at = _utc_now()
+            session.add(job)
+            session.commit()
+            last_commit_at = now
+            _publish(job, message=f"Parsing... {int(elapsed)}s/{total_timeout_s}s")
 
-            # Publish progress updates (optionally every line)
-            if (done % publish_every_n_lines) == 0 or done == total_lines:
-                job.progress = max(progress, int(job.progress or parsing_start))
-                job.updated_at = _utc_now()
-                _publish(
-                    job,
-                    progress=round(progress_exact, 1),
-                    message=f"Parsed {done}/{total_lines} lines",
-                )
+        time.sleep(0.2)
 
-            if progress > last_sent_progress:
-                last_sent_progress = progress
+    proc.join(timeout=0)
+    try:
+        result = out_q.get_nowait()
+    except Exception:  # noqa: BLE001
+        result = {"ok": False, "error": "No result from parser process"}
 
-            # Commit progress to DB at most ~1/s to keep dashboard snapshots fresh.
-            if now - last_commit_at >= 1.0:
-                session.add(job)
-                session.commit()
-                last_commit_at = now
+    if not result.get("ok"):
+        raise RuntimeError(str(result.get("error") or "PDF parsing failed"))
 
-    # Final commit at end of parsing stage.
-    session.add(job)
-    session.commit()
-    return "\n".join(out_pages).strip()
+    parsed_text = str(result.get("text") or "")
+    parsed_text = parsed_text.replace("\r\n", "\n").replace("\r", "\n")
+    parsed_text = re.sub(r"\n{3,}", "\n\n", parsed_text).strip()
+    return parsed_text
 
 
 def _extract_structured_fields(doc: Document, parsed_text: str | None) -> dict[str, Any]:
@@ -497,6 +378,20 @@ def process_document_job(self: Any, job_id: str) -> None:
                 countdown_s = 5
             if max_retries < 0:
                 max_retries = 0
+
+            # If our subprocess-based parsing timed out, treat it as a hard failure
+            # (the PDF consistently exceeds the allowed time).
+            if isinstance(e, TimeoutError):
+                job.status = JobStatus.FAILED
+                job.current_stage = "job_failed"
+                job.error_message = f"Timed out after {int(_SOFT_LIMIT_S)}s"
+                job.progress = 100
+                job.updated_at = _utc_now()
+                job.finished_at = _utc_now()
+                session.add(job)
+                session.commit()
+                _publish(job, message=job.error_message)
+                raise
 
             attempt = int(getattr(getattr(self, "request", None), "retries", 0) or 0) + 1
             if max_retries > 0 and attempt <= max_retries:
