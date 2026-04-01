@@ -31,6 +31,10 @@ celery.conf.update(
     result_serializer="json",
     timezone="UTC",
     enable_utc=True,
+    task_track_started=True,
+    worker_prefetch_multiplier=1,
+    task_acks_late=True,
+    task_reject_on_worker_lost=True,
 )
 
 
@@ -51,17 +55,21 @@ def _utc_now() -> datetime:
 
 
 def _publish(job: ProcessingJob, **event: Any) -> None:
-    publish_progress_sync(
-        job.id,
-        {
-            "document_id": str(job.document_id),
-            "status": job.status.value,
-            "stage": job.current_stage,
-            "progress": job.progress,
-            "ts": _utc_now().isoformat(),
-            **event,
-        },
-    )
+    # Best-effort: publishing progress should never crash processing.
+    try:
+        publish_progress_sync(
+            job.id,
+            {
+                "document_id": str(job.document_id),
+                "status": job.status.value,
+                "stage": job.current_stage,
+                "progress": job.progress,
+                "ts": _utc_now().isoformat(),
+                **event,
+            },
+        )
+    except Exception:
+        return
 
 
 def _is_pdf(doc: Document) -> bool:
@@ -117,9 +125,12 @@ def _parse_pdf_text_with_progress(job: ProcessingJob, storage_path: str, session
         publish_every_n_lines = 1
 
     # First pass: extract per-page text and count lines.
+    # This can take time on some PDFs, so emit coarse progress during scanning
+    # to avoid looking stuck at exactly parsing_started.
     page_lines: list[list[str]] = []
     with pdfplumber.open(storage_path) as pdf:
-        for page in pdf.pages:
+        total_pages = len(pdf.pages)
+        for idx, page in enumerate(pdf.pages, start=1):
             page_text = page.extract_text(layout=True) or page.extract_text() or ""
             page_text = page_text.replace("\r\n", "\n").replace("\r", "\n")
             page_text = re.sub(r"-\n(?=\w)", "", page_text)
@@ -128,6 +139,20 @@ def _parse_pdf_text_with_progress(job: ProcessingJob, storage_path: str, session
             page_text = re.sub(r"\n{3,}", "\n\n", page_text)
             lines = [ln.strip() for ln in page_text.splitlines() if ln.strip()]
             page_lines.append(lines)
+
+            # Coarse progress: 30% -> up to just under 50% while scanning pages.
+            if total_pages > 0:
+                frac_pages = idx / total_pages
+                progress_exact = parsing_start + ((parsing_end - parsing_start) * 0.5 * frac_pages)
+                job.progress = max(int(progress_exact), int(job.progress or parsing_start), parsing_start)
+                job.updated_at = _utc_now()
+                # Commit at most ~1/s (reuse existing cadence)
+                now = time.monotonic()
+                if now - last_commit_at >= 1.0:
+                    session.add(job)
+                    session.commit()
+                    last_commit_at = now
+                    _publish(job, message=f"Scanning PDF pages {idx}/{total_pages}")
 
     total_lines = sum(len(lines) for lines in page_lines)
     if total_lines <= 0:
@@ -171,7 +196,7 @@ def _parse_pdf_text_with_progress(job: ProcessingJob, storage_path: str, session
 
             # Publish progress updates (optionally every line)
             if (done % publish_every_n_lines) == 0 or done == total_lines:
-                job.progress = progress
+                job.progress = max(progress, int(job.progress or parsing_start))
                 job.updated_at = _utc_now()
                 _publish(
                     job,
