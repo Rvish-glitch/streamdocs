@@ -124,6 +124,8 @@ def _parse_pdf_text_with_progress(job: ProcessingJob, storage_path: str, session
     if publish_every_n_lines < 1:
         publish_every_n_lines = 1
 
+    last_commit_at = time.monotonic()
+
     # First pass: extract per-page text and count lines.
     # This can take time on some PDFs, so emit coarse progress during scanning
     # to avoid looking stuck at exactly parsing_started.
