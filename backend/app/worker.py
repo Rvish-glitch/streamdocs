@@ -126,6 +126,16 @@ def _parse_pdf_text_with_progress(job: ProcessingJob, storage_path: str, session
 
     last_commit_at = time.monotonic()
 
+    # If pdfplumber.open() is slow/hangs on some PDFs, bump progress and persist it
+    # before entering pdfplumber so the UI doesn't sit forever at exactly 30%.
+    opening_progress = min(parsing_end - 1, parsing_start + 1)
+    job.progress = max(int(job.progress or parsing_start), opening_progress)
+    job.updated_at = _utc_now()
+    session.add(job)
+    session.commit()
+    last_commit_at = time.monotonic()
+    _publish(job, message="Opening PDF")
+
     # First pass: extract per-page text and count lines.
     # This can take time on some PDFs, so emit coarse progress during scanning
     # to avoid looking stuck at exactly parsing_started.
@@ -133,6 +143,23 @@ def _parse_pdf_text_with_progress(job: ProcessingJob, storage_path: str, session
     with pdfplumber.open(storage_path) as pdf:
         total_pages = len(pdf.pages)
         for idx, page in enumerate(pdf.pages, start=1):
+            # Persist an update *before* extraction of each page, because
+            # page.extract_text() can take a long time on some PDFs.
+            if total_pages > 0:
+                frac_pages = (idx - 1) / total_pages
+                progress_exact = parsing_start + ((parsing_end - parsing_start) * 0.5 * frac_pages)
+                job.progress = max(
+                    int(progress_exact),
+                    int(job.progress or parsing_start),
+                    parsing_start,
+                )
+            job.updated_at = _utc_now()
+            session.add(job)
+            session.commit()
+            last_commit_at = time.monotonic()
+            if total_pages > 0:
+                _publish(job, message=f"Extracting PDF page {idx}/{total_pages}")
+
             page_text = page.extract_text(layout=True) or page.extract_text() or ""
             page_text = page_text.replace("\r\n", "\n").replace("\r", "\n")
             page_text = re.sub(r"-\n(?=\w)", "", page_text)
