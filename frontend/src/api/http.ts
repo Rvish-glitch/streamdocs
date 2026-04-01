@@ -2,9 +2,17 @@ import axios from "axios"
 
 export const apiBaseUrl = import.meta.env.VITE_API_URL as string
 
-// If VITE_API_URL is unset/empty, fall back to same-origin.
-// All callers use absolute paths like /api/v1/..., so baseURL should be "".
-export const resolvedApiBaseUrl = apiBaseUrl || ""
+const normalizeApiBaseUrl = (value: string | undefined): string => {
+  const raw = (value || "").trim()
+  if (!raw) return ""
+
+  // Our callers already use absolute paths like /api/v1/...
+  // If someone sets VITE_API_URL to '/api' or '/api/v1', strip it to avoid
+  // generating URLs like /api/v1/api/v1/...
+  return raw.replace(/\/api(\/v1)?\/?$/, "")
+}
+
+export const resolvedApiBaseUrl = normalizeApiBaseUrl(apiBaseUrl)
 
 export const http = axios.create({
   baseURL: resolvedApiBaseUrl,
