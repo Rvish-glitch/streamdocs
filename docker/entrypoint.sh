@@ -13,8 +13,9 @@ fi
 cd /app/backend
 
 # Run DB readiness + migrations + initial data (same as docker-compose "prestart" service)
+# in the background so the service can bind ports quickly on platforms like Render.
 if [[ "${RUN_PRESTART:-1}" == "1" ]]; then
-  bash scripts/prestart.sh
+  bash scripts/prestart.sh &
 fi
 
 exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf
