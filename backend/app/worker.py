@@ -101,6 +101,8 @@ def _parse_pdf_text(storage_path: str) -> str:
 
 def _parse_pdf_text_with_progress(job: ProcessingJob, storage_path: str, session: Session) -> str:
     import re
+    import signal
+    from contextlib import contextmanager
 
     parsing_start = EVENT_PROGRESS["parsing_started"]
     parsing_end = EVENT_PROGRESS["parsing_completed"]
@@ -126,6 +128,31 @@ def _parse_pdf_text_with_progress(job: ProcessingJob, storage_path: str, session
 
     last_commit_at = time.monotonic()
 
+    # Some PDFs can cause pdfplumber/pdfminer to hang (especially on specific pages).
+    # Guard with timeouts so a single bad document doesn't stick at ~38% forever.
+    open_timeout_s = int(getattr(settings, "PARSING_OPEN_TIMEOUT_SECONDS", 20) or 20)
+    page_timeout_s = int(getattr(settings, "PARSING_PAGE_TIMEOUT_SECONDS", 20) or 20)
+    if open_timeout_s < 1:
+        open_timeout_s = 20
+    if page_timeout_s < 1:
+        page_timeout_s = 20
+
+    class _Timeout(Exception):
+        pass
+
+    @contextmanager
+    def _time_limit(seconds: int):
+        def _handler(signum, frame):  # noqa: ARG001
+            raise _Timeout()
+
+        previous = signal.signal(signal.SIGALRM, _handler)
+        signal.setitimer(signal.ITIMER_REAL, float(seconds))
+        try:
+            yield
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous)
+
     # If pdfplumber.open() is slow/hangs on some PDFs, bump progress and persist it
     # before entering pdfplumber so the UI doesn't sit forever at exactly 30%.
     opening_progress = min(parsing_end - 1, parsing_start + 1)
@@ -140,7 +167,14 @@ def _parse_pdf_text_with_progress(job: ProcessingJob, storage_path: str, session
     # This can take time on some PDFs, so emit coarse progress during scanning
     # to avoid looking stuck at exactly parsing_started.
     page_lines: list[list[str]] = []
-    with pdfplumber.open(storage_path) as pdf:
+    try:
+        with _time_limit(open_timeout_s):
+            pdf_ctx = pdfplumber.open(storage_path)
+    except _Timeout:
+        _publish(job, message=f"Timed out opening PDF after {open_timeout_s}s")
+        return ""
+
+    with pdf_ctx as pdf:
         total_pages = len(pdf.pages)
         for idx, page in enumerate(pdf.pages, start=1):
             # Persist an update *before* extraction of each page, because
@@ -160,7 +194,29 @@ def _parse_pdf_text_with_progress(job: ProcessingJob, storage_path: str, session
             if total_pages > 0:
                 _publish(job, message=f"Extracting PDF page {idx}/{total_pages}")
 
-            page_text = page.extract_text(layout=True) or page.extract_text() or ""
+            try:
+                with _time_limit(page_timeout_s):
+                    page_text = page.extract_text(layout=True) or ""
+                if not page_text:
+                    with _time_limit(page_timeout_s):
+                        page_text = page.extract_text() or ""
+            except _Timeout:
+                _publish(
+                    job,
+                    message=(
+                        f"Timed out extracting page {idx}/{total_pages} after {page_timeout_s}s; skipping"
+                    ),
+                )
+                page_text = ""
+            except Exception as e:  # noqa: BLE001
+                _publish(
+                    job,
+                    message=(
+                        f"Error extracting page {idx}/{total_pages}: {e!s}; skipping"
+                    ),
+                )
+                page_text = ""
+
             page_text = page_text.replace("\r\n", "\n").replace("\r", "\n")
             page_text = re.sub(r"-\n(?=\w)", "", page_text)
             page_text = re.sub(r"[\t\f\v]+", " ", page_text)
