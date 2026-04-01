@@ -12,7 +12,45 @@ import { handleError } from "@/utils"
 import useCustomToast from "./useCustomToast"
 
 const isLoggedIn = () => {
-  return localStorage.getItem("access_token") !== null
+  const raw = localStorage.getItem("access_token")
+  const token = raw?.trim()
+  if (!token) {
+    localStorage.removeItem("access_token")
+    return false
+  }
+
+  // Our backend issues JWT access tokens. If the token is malformed or expired,
+  // treat the user as logged out so the /login route can render.
+  try {
+    const parts = token.split(".")
+    if (parts.length !== 3) {
+      localStorage.removeItem("access_token")
+      return false
+    }
+
+    const base64Url = parts[1]
+    const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/")
+    const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=")
+    const json = atob(padded)
+    const payload = JSON.parse(json) as { exp?: number }
+
+    if (typeof payload.exp !== "number") {
+      localStorage.removeItem("access_token")
+      return false
+    }
+
+    // `exp` is seconds since epoch.
+    const expiresAtMs = payload.exp * 1000
+    if (Date.now() >= expiresAtMs) {
+      localStorage.removeItem("access_token")
+      return false
+    }
+  } catch {
+    localStorage.removeItem("access_token")
+    return false
+  }
+
+  return true
 }
 
 const useAuth = () => {
