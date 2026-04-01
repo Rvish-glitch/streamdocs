@@ -18,7 +18,7 @@ export type ListDocumentsParams = {
 
 export const DocumentsApi = {
   async list(params: ListDocumentsParams) {
-    const { data } = await http.get<DocumentsListResponse>("/api/v1/documents", {
+    const { data } = await http.get<DocumentsListResponse>("/api/v1/documents/", {
       params,
     })
     return data
