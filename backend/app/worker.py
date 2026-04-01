@@ -3,7 +3,10 @@ from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any
 import time
-import multiprocessing as mp
+import os
+import subprocess
+import sys
+import tempfile
 
 import pdfplumber
 
@@ -50,15 +53,6 @@ EVENT_PROGRESS = {
     "completed": 100,
     "job_failed": 100,
 }
-
-
-def _pdfplumber_parse_worker(storage_path: str, out_q: "mp.Queue[dict[str, Any]]") -> None:
-    """Run pdfplumber parsing in an isolated process so we can hard-kill hangs."""
-    try:
-        text = _parse_pdf_text(storage_path)
-        out_q.put({"ok": True, "text": text})
-    except Exception as e:  # noqa: BLE001
-        out_q.put({"ok": False, "error": f"{type(e).__name__}: {e}"})
 
 
 def _utc_now() -> datetime:
@@ -138,49 +132,56 @@ def _parse_pdf_text_with_progress(job: ProcessingJob, storage_path: str, session
     session.commit()
     _publish(job, message="Parsing in progress")
 
-    ctx = mp.get_context("spawn")
-    out_q: "mp.Queue[dict[str, Any]]" = ctx.Queue(maxsize=1)
-    proc = ctx.Process(target=_pdfplumber_parse_worker, args=(storage_path, out_q), daemon=True)
-
+    # Celery worker processes are daemonized (prefork) and cannot spawn child processes
+    # via multiprocessing. Use a plain OS subprocess instead.
+    fd, out_path = tempfile.mkstemp(prefix="streamdocs_pdf_", suffix=".txt")
+    os.close(fd)
     start = time.monotonic()
-    proc.start()
-
-    # Heartbeat progress while waiting. We don't have per-page progress anymore,
-    # but this keeps the UI from looking frozen.
-    while proc.is_alive():
-        elapsed = time.monotonic() - start
-        if elapsed >= total_timeout_s:
-            proc.terminate()
-            proc.join(timeout=2.0)
-            if getattr(proc, "is_alive")() and hasattr(proc, "kill"):
-                proc.kill()  # type: ignore[attr-defined]
-                proc.join(timeout=2.0)
-            raise TimeoutError(f"PDF parsing exceeded {total_timeout_s}s")
-
-        now = time.monotonic()
-        if now - last_commit_at >= 1.0:
-            # Move progress gently toward parsing_end-1 as time elapses.
-            frac = min(0.99, elapsed / float(total_timeout_s))
-            progress_exact = parsing_start + ((parsing_end - parsing_start - 1) * frac)
-            job.progress = max(int(progress_exact), int(job.progress or parsing_start))
-            job.updated_at = _utc_now()
-            session.add(job)
-            session.commit()
-            last_commit_at = now
-            _publish(job, message=f"Parsing... {int(elapsed)}s/{total_timeout_s}s")
-
-        time.sleep(0.2)
-
-    proc.join(timeout=0)
+    proc: subprocess.Popen[str] | None = None
     try:
-        result = out_q.get_nowait()
-    except Exception:  # noqa: BLE001
-        result = {"ok": False, "error": "No result from parser process"}
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "app.pdf_parse_runner", storage_path, out_path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
 
-    if not result.get("ok"):
-        raise RuntimeError(str(result.get("error") or "PDF parsing failed"))
+        while proc.poll() is None:
+            elapsed = time.monotonic() - start
+            if elapsed >= total_timeout_s:
+                proc.kill()
+                proc.wait(timeout=5)
+                raise TimeoutError(f"PDF parsing exceeded {total_timeout_s}s")
 
-    parsed_text = str(result.get("text") or "")
+            now = time.monotonic()
+            if now - last_commit_at >= 1.0:
+                frac = min(0.99, elapsed / float(total_timeout_s))
+                progress_exact = parsing_start + ((parsing_end - parsing_start - 1) * frac)
+                job.progress = max(int(progress_exact), int(job.progress or parsing_start))
+                job.updated_at = _utc_now()
+                session.add(job)
+                session.commit()
+                last_commit_at = now
+                _publish(job, message=f"Parsing... {int(elapsed)}s/{total_timeout_s}s")
+
+            time.sleep(0.2)
+
+        if proc.returncode != 0:
+            stderr = (proc.stderr.read() if proc.stderr else "")
+            raise RuntimeError((stderr or "PDF parsing failed").strip())
+
+        parsed_text = Path(out_path).read_text(encoding="utf-8", errors="replace")
+    finally:
+        try:
+            if proc and proc.stderr:
+                proc.stderr.close()
+        except Exception:
+            pass
+        try:
+            Path(out_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+
     parsed_text = parsed_text.replace("\r\n", "\n").replace("\r", "\n")
     parsed_text = re.sub(r"\n{3,}", "\n\n", parsed_text).strip()
     return parsed_text
