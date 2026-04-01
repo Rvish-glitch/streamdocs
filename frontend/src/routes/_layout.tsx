@@ -7,15 +7,21 @@ import {
   SidebarProvider,
   SidebarTrigger,
 } from "@/components/ui/sidebar"
+import { UsersService } from "@/client"
 import { isLoggedIn } from "@/hooks/useAuth"
 
 export const Route = createFileRoute("/_layout")({
   component: Layout,
   beforeLoad: async () => {
     if (!isLoggedIn()) {
-      throw redirect({
-        to: "/login",
-      })
+      throw redirect({ to: "/login" })
+    }
+
+    try {
+      await UsersService.readUserMe()
+    } catch {
+      localStorage.removeItem("access_token")
+      throw redirect({ to: "/login" })
     }
   },
 })
