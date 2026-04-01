@@ -2,127 +2,111 @@
 
 StreamDocs is a full-stack document workflow system:
 
-- Upload one or more documents (PDFs supported)
+- Upload one or more documents (PDF supported)
 - Process them asynchronously in the background (Celery worker)
-- Stream near-real-time progress to the UI (Redis Pub/Sub → WebSocket)
-- Review/edit the extracted structured result (JSON)
-- Finalize and export the finalized record as JSON or CSV
+- Stream live/near-real-time progress to the UI (Redis Pub/Sub → backend WebSocket)
+- Review/edit extracted structured output
+- Finalize and export the finalized record
+
+This repo is guided by the implementation plan in `assess.txt` and built on top of the FastAPI full-stack template.
 
 ## Tech Stack
 
-- Backend: FastAPI, SQLModel, PostgreSQL, Redis, Celery
+- Backend: FastAPI, SQLModel, PostgreSQL
+- Async processing: Celery + Redis (broker/result backend)
+- Progress streaming: Redis Pub/Sub → FastAPI WebSocket
 - Frontend: React + TypeScript (Vite, TanStack Router/Query, Tailwind, shadcn/ui)
-- Tooling: Docker Compose for local dev + prod-like runs, Playwright for E2E tests
 
-## Quick Start (Docker)
+## Architecture
 
-### Requirements
+Services:
+
+- `frontend`: UI
+- `backend`: REST API + WebSocket progress
+- `worker`: Celery worker that processes documents
+- `db`: PostgreSQL
+- `redis`: Redis
+
+High-level flow:
+
+1. Upload → backend stores file on disk and creates `Document` + `ProcessingJob`.
+2. Backend enqueues Celery task.
+3. Worker parses/extracts and publishes progress events to Redis Pub/Sub.
+4. Backend forwards progress events to the browser over WebSocket.
+5. User reviews/edits results, finalizes, exports.
+
+## Quick Start (Docker Compose)
+
+Requirements:
 
 - Docker + Docker Compose
 
-### Start the stack
+Start:
 
 ```bash
 docker compose watch
 ```
 
-If you don't have Docker Compose "Watch" available, you can use:
+If you don't have Compose Watch available:
 
 ```bash
 docker compose up -d --build
 ```
 
-### Single-image option (app only)
-
-This repo also includes a root [Dockerfile](Dockerfile) that builds **one container** running:
-
-- Nginx (serves the built frontend)
-- FastAPI backend API
-- Celery worker
-
-You still need **Postgres + Redis** separately (e.g. via Docker Compose).
-
-Build:
-
-```bash
-docker build -t streamdocs-all-in-one .
-```
-
-Run (example; adapt env vars to your setup):
-
-```bash
-docker run --rm -p 8080:80 \
-	-e ENVIRONMENT=production \
-	-e PROJECT_NAME=StreamDocs \
-	-e SECRET_KEY=changeme \
-	-e FIRST_SUPERUSER=admin@streamdocs.com \
-	-e FIRST_SUPERUSER_PASSWORD=changeme \
-	-e POSTGRES_SERVER=host.docker.internal \
-	-e POSTGRES_USER=postgres \
-	-e POSTGRES_PASSWORD=postgres \
-	-e POSTGRES_DB=app \
-	-e REDIS_URL=redis://host.docker.internal:6379/0 \
-	streamdocs-all-in-one
-```
-
-The first startup can take a minute (DB init + migrations). To inspect logs:
-
-```bash
-docker compose logs -f
-```
-
-### Local URLs
+### Local URLs (from compose.override.yml)
 
 - Frontend (dashboard): http://localhost:5174
 - Backend (API): http://localhost:8001
 - API docs (Swagger): http://localhost:8001/docs
 - Adminer (DB UI): http://localhost:8081
-- MailCatcher (local email inbox): http://localhost:1081
+- MailCatcher (dev inbox): http://localhost:1081
 - Traefik UI (optional): http://localhost:8090
 
-Note: local ports are intentionally shifted (e.g. `5174`, `8001`) so this stack can run side-by-side with another StreamDocs stack that uses the default `5173`/`8000` ports.
+Note: local ports are intentionally shifted (e.g. `5174`, `8001`) so this stack can run side-by-side with a default stack using `5173`/`8000`.
 
-The Traefik UI is only started if you enable the `traefik` profile:
+Enable Traefik UI locally:
 
 ```bash
 docker compose --profile traefik up -d
 ```
 
-### Environment variables
+## Configuration
 
-Configuration is read from the top-level `.env` file. For deployments, you should override secrets via your CI/CD or server environment.
+Configuration is read from the top-level `.env` file.
 
-At minimum, review/change these before deploying:
+Minimum variables to review for deployments:
 
 - `SECRET_KEY`
 - `POSTGRES_PASSWORD`
 - `FIRST_SUPERUSER_PASSWORD`
 
-## What’s Included
+Common variables:
 
-### Backend workflow
+- `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`
+- `REDIS_URL` (defaults to `redis://redis:6379/0` in Compose)
+- `UPLOAD_DIR` (defaults to `./data/uploads` inside the container)
 
-- `POST /api/v1/documents/upload` (multipart `files[]`) creates a `Document` + queues a `ProcessingJob`
-- The worker processes documents and publishes progress updates to Redis
-- The backend exposes a WebSocket that forwards those progress events to the frontend
+### PDF parsing timeout (30s)
 
-### Live progress WebSocket
+PDF parsing is constrained to 30 seconds by default:
+
+- `PARSING_TOTAL_TIMEOUT_SECONDS=30`
+
+Implementation detail: PDF parsing runs in a separate OS subprocess so it can be hard-killed even if `pdfplumber/pdfminer` hangs.
+
+## API (high level)
+
+- `POST /api/v1/documents/upload` — multipart upload (`files[]`); creates `Document` and queues a `ProcessingJob`
+- `GET /api/v1/documents/` — list documents with latest job status/progress
+- `GET /api/v1/documents/{document_id}` — document detail (metadata + latest job + extraction result)
+
+Live progress:
 
 - `GET /api/v1/jobs/{job_id}/ws?token=<JWT>`
 
-The frontend uses this to show live progress on a document detail page.
-
-### Review, finalize, export
-
-- `PUT /api/v1/documents/{document_id}/result` (save edits)
-- `POST /api/v1/documents/{document_id}/finalize`
-- `GET /api/v1/documents/{document_id}/export?format=json|csv` (finalized-only)
-
 ## Local Development (without Docker)
 
-This repo is set up so you can run services locally while keeping the same ports as Docker.
-
-### Backend
+Backend:
 
 ```bash
 cd backend
@@ -131,7 +115,7 @@ source .venv/bin/activate
 fastapi dev app/main.py --port 8001
 ```
 
-### Frontend
+Frontend:
 
 ```bash
 cd frontend
@@ -139,31 +123,43 @@ bun install
 bun run dev -- --port 5174
 ```
 
-If you want the frontend to talk to a different API, set `VITE_API_URL` (see [frontend/README.md](./frontend/README.md)).
+To point the frontend at a different API, set `VITE_API_URL`.
 
 ## Tests
 
-### Full-stack (Docker Compose)
+Full-stack:
 
 ```bash
 bash ./scripts/test.sh
 ```
 
-### Backend only
+Backend only:
 
 ```bash
 cd backend
 bash ./scripts/test.sh
 ```
 
-### Frontend E2E (Playwright)
-
-With the backend running:
+Frontend E2E (Playwright):
 
 ```bash
 docker compose up -d --wait backend
 cd frontend
 bunx playwright test
+```
+
+## Single-image option (app only)
+
+The root Dockerfile builds one container that runs:
+
+- nginx (serves built frontend)
+- FastAPI backend
+- Celery worker
+
+You still need Postgres + Redis separately.
+
+```bash
+docker build -t streamdocs-all-in-one .
 ```
 
 
