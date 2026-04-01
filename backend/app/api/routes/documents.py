@@ -195,20 +195,44 @@ def upload_documents(
         session.commit()
         session.refresh(job)
 
-        publish_progress_sync(
-            job.id,
-            {
-                "document_id": str(doc.id),
-                "status": JobStatus.QUEUED.value,
-                "stage": "queued",
-                "progress": 0,
-                "ts": get_datetime_utc().isoformat(),
-                "message": "Queued",
-            },
-        )
+        try:
+            publish_progress_sync(
+                job.id,
+                {
+                    "document_id": str(doc.id),
+                    "status": JobStatus.QUEUED.value,
+                    "stage": "queued",
+                    "progress": 0,
+                    "ts": get_datetime_utc().isoformat(),
+                    "message": "Queued",
+                },
+            )
 
-        # Enqueue background processing
-        process_document_job.delay(str(job.id))  # type: ignore[attr-defined]
+            # Enqueue background processing
+            process_document_job.delay(str(job.id))  # type: ignore[attr-defined]
+        except Exception as e:  # noqa: BLE001
+            # Most common in managed deploys: REDIS_URL/Celery broker not configured.
+            # Clean up created records + stored file to avoid leaving orphaned uploads.
+            try:
+                if storage_path.exists():
+                    storage_path.unlink()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                session.delete(job)
+                session.delete(doc)
+                session.commit()
+            except Exception:  # noqa: BLE001
+                session.rollback()
+
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Upload queued but background processing is unavailable. "
+                    "Check Redis/Celery configuration (set REDIS_URL on Railway). "
+                    f"Current REDIS_URL={settings.REDIS_URL!r}. Error={e!s}"
+                ),
+            )
 
         documents_out.append(_to_detail(doc, job, None))
 
