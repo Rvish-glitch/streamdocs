@@ -16,7 +16,9 @@ COPY frontend /app/frontend
 
 # In the single-container setup we proxy /api/* to the backend via nginx,
 # so the frontend can talk to the API from the same origin.
-ARG VITE_API_URL=/api/v1
+# IMPORTANT: client code already calls paths starting with /api/v1,
+# so the base URL must be empty to avoid /api/v1/api/v1 duplication.
+ARG VITE_API_URL=
 ENV VITE_API_URL=${VITE_API_URL}
 
 RUN bun run build
