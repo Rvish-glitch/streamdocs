@@ -73,12 +73,14 @@ docker compose logs -f
 
 ### Local URLs
 
-- Frontend (dashboard): http://localhost:5173
-- Backend (API): http://localhost:8000
-- API docs (Swagger): http://localhost:8000/docs
-- Adminer (DB UI): http://localhost:8080
-- MailCatcher (local email inbox): http://localhost:1080
+- Frontend (dashboard): http://localhost:5174
+- Backend (API): http://localhost:8001
+- API docs (Swagger): http://localhost:8001/docs
+- Adminer (DB UI): http://localhost:8081
+- MailCatcher (local email inbox): http://localhost:1081
 - Traefik UI (optional): http://localhost:8090
+
+Note: local ports are intentionally shifted (e.g. `5174`, `8001`) so this stack can run side-by-side with another StreamDocs stack that uses the default `5173`/`8000` ports.
 
 The Traefik UI is only started if you enable the `traefik` profile:
 
@@ -126,7 +128,7 @@ This repo is set up so you can run services locally while keeping the same ports
 cd backend
 uv sync
 source .venv/bin/activate
-fastapi dev app/main.py
+fastapi dev app/main.py --port 8001
 ```
 
 ### Frontend
@@ -134,7 +136,7 @@ fastapi dev app/main.py
 ```bash
 cd frontend
 bun install
-bun run dev
+bun run dev -- --port 5174
 ```
 
 If you want the frontend to talk to a different API, set `VITE_API_URL` (see [frontend/README.md](./frontend/README.md)).
