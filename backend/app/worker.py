@@ -344,7 +344,7 @@ def process_document_job(job_id: str) -> None:
         job.status = JobStatus.PROCESSING
         job.started_at = _utc_now()
         job.current_stage = "job_started"
-        job.progress = EVENT_PROGRESS["job_started"]
+        job.progress = max(int(job.progress or 0), EVENT_PROGRESS["job_started"])
         job.error_message = None
         job.updated_at = _utc_now()
         session.add(job)
@@ -354,7 +354,7 @@ def process_document_job(job_id: str) -> None:
         try:
             # Stage 1: parsing started
             job.current_stage = "parsing_started"
-            job.progress = EVENT_PROGRESS["parsing_started"]
+            job.progress = max(int(job.progress or 0), EVENT_PROGRESS["parsing_started"])
             job.updated_at = _utc_now()
             session.add(job)
             session.commit()
@@ -369,7 +369,7 @@ def process_document_job(job_id: str) -> None:
 
             # Stage 1b: parsing completed (placeholder)
             job.current_stage = "parsing_completed"
-            job.progress = EVENT_PROGRESS["parsing_completed"]
+            job.progress = max(int(job.progress or 0), EVENT_PROGRESS["parsing_completed"])
             job.updated_at = _utc_now()
             session.add(job)
             session.commit()
@@ -379,7 +379,7 @@ def process_document_job(job_id: str) -> None:
 
             # Stage 2b: extraction completed
             job.current_stage = "extraction_completed"
-            job.progress = EVENT_PROGRESS["extraction_completed"]
+            job.progress = max(int(job.progress or 0), EVENT_PROGRESS["extraction_completed"])
             job.updated_at = _utc_now()
             session.add(job)
             session.commit()
