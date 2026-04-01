@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     # Emit progress events every N parsed lines (1 = every line)
     PARSING_PROGRESS_PUBLISH_EVERY_N_LINES: int = 1
 
+    # If a single PDF takes longer than this to parse, mark the job as FAILED.
+    # This avoids long-running/stuck PDFs holding the worker indefinitely.
+    PARSING_TOTAL_TIMEOUT_SECONDS: int = 30
+
     REDIS_URL: str = "redis://redis:6379/0"
     CELERY_BROKER_URL: str | None = None
     CELERY_RESULT_BACKEND: str | None = None

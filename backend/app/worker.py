@@ -128,6 +128,25 @@ def _parse_pdf_text_with_progress(job: ProcessingJob, storage_path: str, session
 
     last_commit_at = time.monotonic()
 
+    # Hard deadline for the entire PDF parsing step (not just a single page).
+    # If parsing exceeds this duration, fail the job so the UI doesn't wait indefinitely.
+    total_timeout_s = int(getattr(settings, "PARSING_TOTAL_TIMEOUT_SECONDS", 30) or 30)
+    if total_timeout_s < 1:
+        total_timeout_s = 30
+    overall_start = time.monotonic()
+
+    def _time_left_s() -> float:
+        return total_timeout_s - (time.monotonic() - overall_start)
+
+    def _require_time_left(context: str) -> int:
+        left = _time_left_s()
+        if left <= 0:
+            raise TimeoutError(
+                f"PDF parsing exceeded {total_timeout_s}s (timeout while {context})"
+            )
+        # signal/alarm takes seconds; keep at least 1s when we still have time.
+        return max(1, int(left))
+
     # Some PDFs can cause pdfplumber/pdfminer to hang (especially on specific pages).
     # Guard with timeouts so a single bad document doesn't stick at ~38% forever.
     open_timeout_s = int(getattr(settings, "PARSING_OPEN_TIMEOUT_SECONDS", 20) or 20)
@@ -163,12 +182,14 @@ def _parse_pdf_text_with_progress(job: ProcessingJob, storage_path: str, session
     last_commit_at = time.monotonic()
     _publish(job, message="Opening PDF")
 
+    _require_time_left("opening PDF")
+
     # First pass: extract per-page text and count lines.
     # This can take time on some PDFs, so emit coarse progress during scanning
     # to avoid looking stuck at exactly parsing_started.
     page_lines: list[list[str]] = []
     try:
-        with _time_limit(open_timeout_s):
+        with _time_limit(min(open_timeout_s, _require_time_left("opening PDF"))):
             pdf_ctx = pdfplumber.open(storage_path)
     except _Timeout:
         _publish(job, message=f"Timed out opening PDF after {open_timeout_s}s")
@@ -177,6 +198,8 @@ def _parse_pdf_text_with_progress(job: ProcessingJob, storage_path: str, session
     with pdf_ctx as pdf:
         total_pages = len(pdf.pages)
         for idx, page in enumerate(pdf.pages, start=1):
+            _require_time_left("extracting PDF pages")
+
             # Persist an update *before* extraction of each page, because
             # page.extract_text() can take a long time on some PDFs.
             if total_pages > 0:
@@ -195,10 +218,10 @@ def _parse_pdf_text_with_progress(job: ProcessingJob, storage_path: str, session
                 _publish(job, message=f"Extracting PDF page {idx}/{total_pages}")
 
             try:
-                with _time_limit(page_timeout_s):
+                with _time_limit(min(page_timeout_s, _require_time_left("extracting PDF page text"))):
                     page_text = page.extract_text(layout=True) or ""
                 if not page_text:
-                    with _time_limit(page_timeout_s):
+                    with _time_limit(min(page_timeout_s, _require_time_left("extracting PDF page text"))):
                         page_text = page.extract_text() or ""
             except _Timeout:
                 _publish(
@@ -256,10 +279,12 @@ def _parse_pdf_text_with_progress(job: ProcessingJob, storage_path: str, session
     _publish(job, message="Parsing in progress")
 
     for page_idx, lines in enumerate(page_lines, start=1):
+        _require_time_left("building parsed output")
         if not lines:
             continue
         out_pages.append(f"--- Page {page_idx} ---")
         for line in lines:
+            _require_time_left("building parsed output")
             out_pages.append(line)
             done += 1
 
@@ -482,5 +507,5 @@ def process_document_job(job_id: str) -> None:
             job.finished_at = _utc_now()
             session.add(job)
             session.commit()
-            _publish(job, message="Job failed")
+            _publish(job, message=job.error_message or "Job failed")
             raise
