@@ -10,12 +10,32 @@ StreamDocs is a full-stack document workflow system:
 
 This repo is guided by the implementation plan in `assess.txt` and built on top of the FastAPI full-stack template.
 
+## 🎥 Demo Video
+
+<!-- Add better demo later -->
+
+🎬 [Watch the Demo](https://drive.google.com/file/d/1Hf-REAyhAzA2gQvzn8lRWmsT5Ty6vghY/view)
+
 ## Tech Stack
 
-- Backend: FastAPI, SQLModel, PostgreSQL
-- Async processing: Celery + Redis (broker/result backend)
-- Progress streaming: Redis Pub/Sub → FastAPI WebSocket
-- Frontend: React + TypeScript (Vite, TanStack Router/Query, Tailwind, shadcn/ui)
+**Backend**
+
+[![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?style=for-the-badge&logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![Redis](https://img.shields.io/badge/Redis-DC382D?style=for-the-badge&logo=redis&logoColor=white)](https://redis.io/)
+[![Celery](https://img.shields.io/badge/Celery-37814A?style=for-the-badge&logo=celery&logoColor=white)](https://docs.celeryq.dev/)
+
+**Frontend**
+
+[![React](https://img.shields.io/badge/React-61DAFB?style=for-the-badge&logo=react&logoColor=0B1320)](https://react.dev/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Vite](https://img.shields.io/badge/Vite-646CFF?style=for-the-badge&logo=vite&logoColor=white)](https://vitejs.dev/)
+[![Tailwind CSS](https://img.shields.io/badge/Tailwind%20CSS-38BDF8?style=for-the-badge&logo=tailwindcss&logoColor=0B1320)](https://tailwindcss.com/)
+
+**Infra**
+
+[![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com/)
+[![Docker Compose](https://img.shields.io/badge/Docker%20Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://docs.docker.com/compose/)
 
 ## Architecture
 
