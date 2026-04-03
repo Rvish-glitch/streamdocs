@@ -8,7 +8,6 @@ StreamDocs is a full-stack document workflow system:
 - Review/edit extracted structured output
 - Finalize and export the finalized record
 
-This repo is guided by the implementation plan in `assess.txt` and built on top of the FastAPI full-stack template.
 
 ## 🎥 Demo Video
 
