@@ -8,11 +8,8 @@ COPY --from=ghcr.io/astral-sh/uv:0.9.26 /uv /uvx /bin/
 
 # Compile bytecode
 # Ref: https://docs.astral.sh/uv/guides/integration/docker/#compiling-bytecode
-ENV UV_COMPILE_BYTECODE=1
-
-# uv Cache
-# Ref: https://docs.astral.sh/uv/guides/integration/docker/#caching
-ENV UV_LINK_MODE=copy
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
 
 WORKDIR /app/
 
@@ -21,19 +18,13 @@ WORKDIR /app/
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Install dependencies
-COPY uv.lock pyproject.toml /app/
-RUN uv sync --frozen --no-install-workspace --package app
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-install-project
 
-COPY ./backend/scripts /app/backend/scripts
-
-COPY ./backend/pyproject.toml ./backend/alembic.ini /app/backend/
-
-COPY ./backend/app /app/backend/app
+COPY . ./
 
 # Sync the project
 # Ref: https://docs.astral.sh/uv/guides/integration/docker/#intermediate-layers
-RUN uv sync --frozen --package app
-
-WORKDIR /app/backend/
+RUN uv sync --frozen
 
 CMD ["fastapi", "run", "--workers", "4", "app/main.py"]

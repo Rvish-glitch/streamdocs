@@ -14,8 +14,7 @@ from app.api.deps import CurrentUser, SessionDep
 from app.core import security
 from app.core.config import settings
 from app.core.db import engine
-from app.core.redis import get_redis_async, progress_channel
-from app.core.redis import publish_progress_sync
+from app.core.redis import get_redis_async, progress_channel, publish_progress_sync, publish_user_event_sync
 from app.models import Document, JobStatus, ProcessingJob, ProcessingJobPublic, TokenPayload, User
 from app.worker import process_document_job
 
@@ -39,6 +38,16 @@ def delete_job(session: SessionDep, current_user: CurrentUser, job_id: uuid.UUID
 
     session.delete(job)
     session.commit()
+
+    publish_user_event_sync(
+        current_user.id,
+        {
+            "type": "job_deleted",
+            "job_id": str(job_id),
+            "document_id": str(doc.id),
+            "ts": datetime.now(timezone.utc).isoformat(),
+        },
+    )
     return
 
 
@@ -69,17 +78,18 @@ def retry_job(session: SessionDep, current_user: CurrentUser, job_id: uuid.UUID)
     session.commit()
     session.refresh(new_job)
 
-    publish_progress_sync(
-        new_job.id,
-        {
-            "document_id": str(doc.id),
-            "status": JobStatus.QUEUED.value,
-            "stage": "queued",
-            "progress": 0,
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "message": "Queued (retry)",
-        },
-    )
+    retry_event = {
+        "type": "job_progress",
+        "job_id": str(new_job.id),
+        "document_id": str(doc.id),
+        "status": JobStatus.QUEUED.value,
+        "stage": "queued",
+        "progress": 0,
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "message": "Queued (retry)",
+    }
+    publish_progress_sync(new_job.id, retry_event)
+    publish_user_event_sync(current_user.id, retry_event)
 
     process_document_job.delay(str(new_job.id))  # type: ignore[attr-defined]
     return new_job

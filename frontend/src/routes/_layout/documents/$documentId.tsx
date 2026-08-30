@@ -32,7 +32,6 @@ function DocumentDetail() {
   const { data, isLoading } = useQuery({
     queryKey: ["document", documentId],
     queryFn: () => DocumentsApi.detail(documentId),
-    refetchInterval: 1000,
   })
 
   const latestJob = data?.latest_job

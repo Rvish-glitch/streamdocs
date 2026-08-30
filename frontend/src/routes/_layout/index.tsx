@@ -16,6 +16,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Input } from "@/components/ui/input"
+import { useDocumentsWs } from "@/hooks/useDocumentsWs"
 import type { ColumnDef } from "@tanstack/react-table"
 import type { DocumentListItem, JobStatus } from "@/types/documents"
 
@@ -36,6 +37,9 @@ function DocumentsDashboard() {
   const [sort, setSort] = useState<"created_at" | "filename">("created_at")
   const [order, setOrder] = useState<"desc" | "asc">("desc")
 
+  // Real-time WebSocket connection for live updates without HTTP polling
+  useDocumentsWs()
+
   const { data, isLoading } = useQuery({
     queryKey: ["documents", { q, status, sort, order }],
     queryFn: () =>
@@ -47,7 +51,6 @@ function DocumentsDashboard() {
         skip: 0,
         limit: 100,
       }),
-    refetchInterval: 1000,
   })
 
   const documents = data?.data ?? []

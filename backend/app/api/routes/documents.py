@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 import uuid
@@ -5,12 +6,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import APIRouter, File, HTTPException, Query, Response, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, Response, UploadFile, WebSocket, WebSocketDisconnect
+from jwt.exceptions import InvalidTokenError
+from pydantic import ValidationError
 from sqlmodel import Session, delete, func, select
 
+import jwt
+
 from app.api.deps import CurrentUser, SessionDep
+from app.core import security
 from app.core.config import settings
-from app.core.redis import publish_progress_sync
+from app.core.db import engine
+from app.core.redis import get_redis_async, publish_progress_sync, publish_user_event_sync, user_events_channel
 from app.models import (
     Document,
     DocumentDetailPublic,
@@ -25,6 +32,8 @@ from app.models import (
     ProcessingJob,
     ProcessingJobPublic,
     ReviewStatus,
+    TokenPayload,
+    User,
     get_datetime_utc,
 )
 from app.worker import process_document_job
@@ -84,6 +93,71 @@ def _to_detail(doc: Document, latest_job: ProcessingJob | None, result: Extracti
         latest_job=ProcessingJobPublic.model_validate(latest_job) if latest_job else None,
         result=ExtractionResultPublic.model_validate(result) if result else None,
     )
+
+
+@router.websocket("/ws")
+async def documents_events_ws(websocket: WebSocket) -> None:
+    # Authenticate websocket client via JWT.
+    token = websocket.query_params.get("token")
+    if not token:
+        auth = websocket.headers.get("authorization")
+        if auth and auth.lower().startswith("bearer "):
+            token = auth.split(" ", 1)[1].strip()
+
+    if not token:
+        await websocket.accept()
+        await websocket.close(code=1008)
+        return
+
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[security.ALGORITHM])
+        token_data = TokenPayload(**payload)
+    except (InvalidTokenError, ValidationError):
+        await websocket.accept()
+        await websocket.close(code=1008)
+        return
+
+    with Session(engine) as session:
+        user = session.get(User, token_data.sub)
+        if not user or not user.is_active:
+            await websocket.accept()
+            await websocket.close(code=1008)
+            return
+        user_id = user.id
+
+    await websocket.accept()
+
+    redis = get_redis_async()
+    pubsub = redis.pubsub()
+
+    try:
+        await pubsub.subscribe(user_events_channel(user_id))
+        await websocket.send_json(
+            {
+                "type": "connected",
+                "user_id": str(user_id),
+                "ts": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+
+        while True:
+            message = await pubsub.get_message(
+                ignore_subscribe_messages=True, timeout=1.0
+            )
+            if message and message.get("type") == "message":
+                data = message.get("data")
+                if isinstance(data, str):
+                    await websocket.send_text(data)
+            await asyncio.sleep(0.1)
+    except WebSocketDisconnect:
+        return
+    finally:
+        try:
+            await pubsub.unsubscribe(user_events_channel(user_id))
+        except Exception:  # noqa: BLE001
+            pass
+        await pubsub.close()
+        await redis.close()
 
 
 @router.get("/", response_model=DocumentsPublic)
@@ -236,6 +310,15 @@ def upload_documents(
 
         documents_out.append(_to_detail(doc, job, None))
 
+    publish_user_event_sync(
+        current_user.id,
+        {
+            "type": "document_uploaded",
+            "document_ids": [str(d.id) for d in documents_out],
+            "ts": get_datetime_utc().isoformat(),
+        },
+    )
+
     return DocumentsUploadResponse(documents=documents_out)
 
 
@@ -293,6 +376,15 @@ def delete_document(
 
     session.delete(doc)
     session.commit()
+
+    publish_user_event_sync(
+        current_user.id,
+        {
+            "type": "document_deleted",
+            "document_id": str(document_id),
+            "ts": get_datetime_utc().isoformat(),
+        },
+    )
     return
 
 
@@ -343,17 +435,17 @@ def update_result(
         session.commit()
         session.refresh(result)
 
-        publish_progress_sync(
-            latest_job.id,
-            {
-                "document_id": str(doc.id),
-                "status": latest_job.status.value,
-                "stage": "saved",
-                "progress": 90,
-                "ts": get_datetime_utc().isoformat(),
-                "message": "Saved edits",
-            },
-        )
+        event_payload = {
+            "type": "document_updated",
+            "document_id": str(doc.id),
+            "status": latest_job.status.value,
+            "stage": "saved",
+            "progress": 90,
+            "ts": get_datetime_utc().isoformat(),
+            "message": "Saved edits",
+        }
+        publish_progress_sync(latest_job.id, event_payload)
+        publish_user_event_sync(current_user.id, event_payload)
         return result
 
     new_result = ExtractionResult(
@@ -368,17 +460,17 @@ def update_result(
     session.commit()
     session.refresh(new_result)
 
-    publish_progress_sync(
-        latest_job.id,
-        {
-            "document_id": str(doc.id),
-            "status": latest_job.status.value,
-            "stage": "saved",
-            "progress": 90,
-            "ts": get_datetime_utc().isoformat(),
-            "message": "Saved edits",
-        },
-    )
+    event_payload = {
+        "type": "document_updated",
+        "document_id": str(doc.id),
+        "status": latest_job.status.value,
+        "stage": "saved",
+        "progress": 90,
+        "ts": get_datetime_utc().isoformat(),
+        "message": "Saved edits",
+    }
+    publish_progress_sync(latest_job.id, event_payload)
+    publish_user_event_sync(current_user.id, event_payload)
     return new_result
 
 
@@ -427,17 +519,17 @@ def finalize_result(
     session.commit()
     session.refresh(result)
 
-    publish_progress_sync(
-        latest_job.id,
-        {
-            "document_id": str(doc.id),
-            "status": latest_job.status.value,
-            "stage": "completed",
-            "progress": 100,
-            "ts": get_datetime_utc().isoformat(),
-            "message": "Finalized",
-        },
-    )
+    finalize_payload = {
+        "type": "document_updated",
+        "document_id": str(doc.id),
+        "status": latest_job.status.value,
+        "stage": "completed",
+        "progress": 100,
+        "ts": get_datetime_utc().isoformat(),
+        "message": "Finalized",
+    }
+    publish_progress_sync(latest_job.id, finalize_payload)
+    publish_user_event_sync(current_user.id, finalize_payload)
     return result
 
 

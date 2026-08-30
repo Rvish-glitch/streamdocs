@@ -16,7 +16,7 @@ from sqlmodel import Session, select
 
 from app.core.config import settings
 from app.core.db import engine
-from app.core.redis import publish_progress_sync
+from app.core.redis import publish_progress_sync, publish_user_event_sync
 from app.models import (
     Document,
     ExtractionResult,
@@ -59,20 +59,22 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _publish(job: ProcessingJob, **event: Any) -> None:
+def _publish(job: ProcessingJob, owner_id: uuid.UUID | None = None, **event: Any) -> None:
     # Best-effort: publishing progress should never crash processing.
     try:
-        publish_progress_sync(
-            job.id,
-            {
-                "document_id": str(job.document_id),
-                "status": job.status.value,
-                "stage": job.current_stage,
-                "progress": job.progress,
-                "ts": _utc_now().isoformat(),
-                **event,
-            },
-        )
+        payload = {
+            "type": "job_progress",
+            "job_id": str(job.id),
+            "document_id": str(job.document_id),
+            "status": job.status.value,
+            "stage": job.current_stage,
+            "progress": job.progress,
+            "ts": _utc_now().isoformat(),
+            **event,
+        }
+        publish_progress_sync(job.id, payload)
+        if owner_id:
+            publish_user_event_sync(owner_id, payload)
     except Exception:
         return
 
@@ -84,27 +86,31 @@ def _is_pdf(doc: Document) -> bool:
 
 
 def _parse_pdf_text(storage_path: str) -> str:
-    # pdfplumber also cannot provide meaningful byte-level progress; treat parsing as a workflow step.
     import re
+    if not os.path.exists(storage_path):
+        return ""
+    try:
+        pages_out: list[str] = []
+        with pdfplumber.open(storage_path) as pdf:
+            for idx, page in enumerate(pdf.pages, start=1):
+                page_text = page.extract_text(layout=True) or page.extract_text() or ""
+                page_text = page_text.replace("\r\n", "\n").replace("\r", "\n")
+                page_text = re.sub(r"-\n(?=\w)", "", page_text)
+                page_text = re.sub(r"[\t\f\v]+", " ", page_text)
+                page_text = re.sub(r"[ ]{2,}", " ", page_text)
+                page_text = re.sub(r"\n{3,}", "\n\n", page_text).strip()
 
-    pages_out: list[str] = []
-    with pdfplumber.open(storage_path) as pdf:
-        for idx, page in enumerate(pdf.pages, start=1):
-            # layout=True tends to preserve line breaks in a more readable way
-            page_text = page.extract_text(layout=True) or page.extract_text() or ""
-            page_text = page_text.replace("\r\n", "\n").replace("\r", "\n")
-            page_text = re.sub(r"-\n(?=\w)", "", page_text)
-            page_text = re.sub(r"[\t\f\v]+", " ", page_text)
-            page_text = re.sub(r"[ ]{2,}", " ", page_text)
-            page_text = re.sub(r"\n{3,}", "\n\n", page_text).strip()
+                if page_text:
+                    pages_out.append(f"--- Page {idx} ---\n{page_text}")
 
-            if page_text:
-                pages_out.append(f"--- Page {idx} ---\n{page_text}")
-
-    return "\n\n".join(pages_out).strip()
+        return "\n\n".join(pages_out).strip()
+    except Exception:
+        return ""
 
 
-def _parse_pdf_text_with_progress(job: ProcessingJob, storage_path: str, session: Session) -> str:
+def _parse_pdf_text_with_progress(
+    job: ProcessingJob, storage_path: str, session: Session, owner_id: uuid.UUID | None = None
+) -> str:
     import re
 
     parsing_start = EVENT_PROGRESS["parsing_started"]
@@ -125,12 +131,12 @@ def _parse_pdf_text_with_progress(job: ProcessingJob, storage_path: str, session
     session.add(job)
     session.commit()
     last_commit_at = time.monotonic()
-    _publish(job, message="Opening PDF")
+    _publish(job, owner_id=owner_id, message="Opening PDF")
 
     job.current_stage = "parsing_started"
     session.add(job)
     session.commit()
-    _publish(job, message="Parsing in progress")
+    _publish(job, owner_id=owner_id, message="Parsing in progress")
 
     # Celery worker processes are daemonized (prefork) and cannot spawn child processes
     # via multiprocessing. Use a plain OS subprocess instead.
@@ -162,7 +168,7 @@ def _parse_pdf_text_with_progress(job: ProcessingJob, storage_path: str, session
                 session.add(job)
                 session.commit()
                 last_commit_at = now
-                _publish(job, message=f"Parsing... {int(elapsed)}s/{total_timeout_s}s")
+                _publish(job, owner_id=owner_id, message=f"Parsing... {int(elapsed)}s/{total_timeout_s}s")
 
             time.sleep(0.2)
 
@@ -290,52 +296,39 @@ def process_document_job(self: Any, job_id: str) -> None:
             _publish(job, message=job.error_message)
             return
 
-        # Keep QUEUED=0% visible briefly (assignment UX), then emit job_started=10%.
-        time.sleep(2.0)
+        owner_id = doc.owner_id
+
+        def _emit_stage(pct: int, stage_name: str, message: str, pause: float = 0.8) -> None:
+            job.progress = pct
+            job.current_stage = stage_name
+            job.updated_at = _utc_now()
+            session.add(job)
+            session.commit()
+            _publish(job, owner_id=owner_id, message=message)
+            if pause > 0:
+                time.sleep(pause)
 
         job.status = JobStatus.PROCESSING
         job.started_at = _utc_now()
-        job.current_stage = "job_started"
-        job.progress = max(int(job.progress or 0), EVENT_PROGRESS["job_started"])
         job.error_message = None
-        job.updated_at = _utc_now()
-        session.add(job)
-        session.commit()
-        _publish(job, message="Job started")
+        _emit_stage(10, "job_started", "Job started", pause=0.8)
 
         try:
-            # Stage 1: parsing started
-            job.current_stage = "parsing_started"
-            job.progress = max(int(job.progress or 0), EVENT_PROGRESS["parsing_started"])
-            job.updated_at = _utc_now()
-            session.add(job)
-            session.commit()
-            _publish(job, message="Parsing started")
+            # Stage 1: Parsing
+            _emit_stage(30, "parsing_started", "Parsing document text", pause=0.8)
 
             parsed_text: str | None = None
             if _is_pdf(doc):
-                parsed_text = _parse_pdf_text_with_progress(job, doc.storage_path, session)
+                parsed_text = _parse_pdf_text(doc.storage_path)
             else:
-                # Non-PDF is out of scope here; keep placeholder text.
                 parsed_text = None
 
-            # Stage 1b: parsing completed (placeholder)
-            job.current_stage = "parsing_completed"
-            job.progress = max(int(job.progress or 0), EVENT_PROGRESS["parsing_completed"])
-            job.updated_at = _utc_now()
-            session.add(job)
-            session.commit()
-            _publish(job, message="Parsing completed")
+            _emit_stage(50, "parsing_completed", "Parsing completed", pause=0.8)
 
+            # Stage 2: Structured field extraction
+            _emit_stage(70, "extracting_fields", "Extracting structured fields", pause=0.8)
             extracted = _extract_structured_fields(doc, parsed_text)
-
-            # Stage 2b: extraction completed
-            job.current_stage = "extraction_completed"
-            job.progress = max(int(job.progress or 0), EVENT_PROGRESS["extraction_completed"])
-            job.updated_at = _utc_now()
-            session.add(job)
-            session.commit()
-            _publish(job, message="Extraction completed")
+            _emit_stage(90, "extraction_completed", "Extraction completed", pause=0.8)
 
             # Write/update result
             existing = session.exec(
@@ -360,15 +353,15 @@ def process_document_job(self: Any, job_id: str) -> None:
                 )
             session.commit()
 
-            # Stop at 70% and wait for user actions:
-            # - Save edits -> 90%
-            # - Finalize   -> 100%
+            # Final 100% completion
             job.status = JobStatus.COMPLETED
             job.updated_at = _utc_now()
             job.finished_at = _utc_now()
+            job.progress = 100
+            job.current_stage = "saved"
             session.add(job)
             session.commit()
-            _publish(job, message="Processing complete; awaiting review")
+            _publish(job, owner_id=owner_id, message="Processing complete; awaiting review")
         except Retry:
             # Let Celery handle retries without marking the job as failed.
             raise
@@ -391,7 +384,7 @@ def process_document_job(self: Any, job_id: str) -> None:
                 job.finished_at = _utc_now()
                 session.add(job)
                 session.commit()
-                _publish(job, message=job.error_message)
+                _publish(job, owner_id=owner_id, message=job.error_message)
                 raise
 
             attempt = int(getattr(getattr(self, "request", None), "retries", 0) or 0) + 1
@@ -407,7 +400,7 @@ def process_document_job(self: Any, job_id: str) -> None:
                 job.finished_at = None
                 session.add(job)
                 session.commit()
-                _publish(job, message=job.error_message)
+                _publish(job, owner_id=owner_id, message=job.error_message)
                 raise self.retry(
                     countdown=countdown_s,
                     max_retries=max_retries,
@@ -422,7 +415,7 @@ def process_document_job(self: Any, job_id: str) -> None:
             job.finished_at = _utc_now()
             session.add(job)
             session.commit()
-            _publish(job, message=job.error_message)
+            _publish(job, owner_id=owner_id, message=job.error_message)
             raise
         except Exception as e:  # noqa: BLE001
             job.status = JobStatus.FAILED
@@ -433,5 +426,5 @@ def process_document_job(self: Any, job_id: str) -> None:
             job.finished_at = _utc_now()
             session.add(job)
             session.commit()
-            _publish(job, message=job.error_message or "Job failed")
+            _publish(job, owner_id=owner_id, message=job.error_message or "Job failed")
             raise
