@@ -57,3 +57,9 @@ frontend/.vite/
 
 # Copier (local scaffolding state)
 .copier/.copier-answers.yml
+
+# Local dev scripts & scratch
+start-dev.bat
+start-dev.ps1
+scratch/
+
