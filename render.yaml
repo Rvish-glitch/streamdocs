@@ -93,7 +93,6 @@ services:
     # Prepend https:// since Render's 'host' property omits the protocol
     buildCommand: "cd frontend && npm install && VITE_API_URL=https://$VITE_API_URL npm run build"
     staticPublishPath: ./frontend/dist
-    plan: free
     envVars:
       - key: VITE_API_URL
         fromService:
