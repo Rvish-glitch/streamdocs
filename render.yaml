@@ -5,7 +5,6 @@ databases:
   - name: streamdocs-db
     plan: free
     databaseName: documents
-    user: postgres
     region: ohio
 
 services:
@@ -17,6 +16,7 @@ services:
     plan: free
     region: ohio
     maxmemoryPolicy: noeviction
+    ipAllowList: []
 
   # ==========================================
   # 3. Backend API (FastAPI)
@@ -29,8 +29,8 @@ services:
     dockerContext: ./backend
     plan: free
     healthCheckPath: /api/v1/utils/health-check/
-    # Run DB migrations and initial data seeding before deploying the new API version
-    preDeployCommand: "python -m app.backend_pre_start && alembic upgrade head && python -m app.initial_data"
+    # Free tier does not support preDeployCommand, so we run migrations on startup
+    dockerCommand: '/bin/bash -c "python -m app.backend_pre_start && alembic upgrade head && python -m app.initial_data && fastapi run --workers 4 app/main.py"'
     envVars:
       - key: ENVIRONMENT
         value: production
@@ -90,7 +90,6 @@ services:
   - type: web
     name: streamdocs-frontend
     env: static
-    region: ohio
     # Prepend https:// since Render's 'host' property omits the protocol
     buildCommand: "cd frontend && npm install && VITE_API_URL=https://$VITE_API_URL npm run build"
     staticPublishPath: ./frontend/dist
