@@ -15,11 +15,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing_extensions import Self
 
 
-def parse_cors(v: Any) -> list[str] | str:
+def parse_cors(v: Any) -> list[str]:
     if isinstance(v, str) and not v.startswith("["):
         return [i.strip() for i in v.split(",") if i.strip()]
-    elif isinstance(v, list | str):
-        return v
+    elif isinstance(v, list):
+        return [str(i).strip() for i in v]
+    elif isinstance(v, str):
+        return [v]
     raise ValueError(v)
 
 
@@ -38,15 +40,18 @@ class Settings(BaseSettings):
     ENVIRONMENT: Literal["local", "staging", "production"] = "local"
 
     BACKEND_CORS_ORIGINS: Annotated[
-        list[AnyUrl] | str, BeforeValidator(parse_cors)
+        str | list[str], BeforeValidator(parse_cors)
     ] = []
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def all_cors_origins(self) -> list[str]:
-        return [str(origin).rstrip("/") for origin in self.BACKEND_CORS_ORIGINS] + [
-            self.FRONTEND_HOST
-        ]
+        origins = [origin.rstrip("/") for origin in self.BACKEND_CORS_ORIGINS if origin.strip()]
+        if "*" in origins:
+            return ["*"]
+        if self.FRONTEND_HOST and self.FRONTEND_HOST not in origins:
+            origins.append(self.FRONTEND_HOST.rstrip("/"))
+        return origins
 
     PROJECT_NAME: str
     SENTRY_DSN: HttpUrl | None = None
