@@ -26,5 +26,6 @@ COPY . ./
 # Sync the project
 # Ref: https://docs.astral.sh/uv/guides/integration/docker/#intermediate-layers
 RUN uv sync --frozen
+RUN chmod +x /app/start.sh
 
-CMD ["fastapi", "run", "--workers", "4", "app/main.py"]
+CMD ["/app/start.sh"]
