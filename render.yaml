@@ -1,14 +1,14 @@
-services:
+databases:
   # ==========================================
   # 1. PostgreSQL Database
   # ==========================================
-  - type: psql
-    name: streamdocs-db
+  - name: streamdocs-db
     plan: free
     databaseName: documents
     user: postgres
     region: ohio
 
+services:
   # ==========================================
   # 2. Redis (for Celery Tasks)
   # ==========================================
