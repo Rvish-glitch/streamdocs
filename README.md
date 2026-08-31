@@ -9,11 +9,6 @@ StreamDocs is a full-stack document workflow system:
 - Finalize and export the finalized record
 
 
-## 🎥 Demo Video
-
-<!-- Add better demo later -->
-
-🎬 [Watch the Demo](https://drive.google.com/file/d/1Hf-REAyhAzA2gQvzn8lRWmsT5Ty6vghY/view)
 
 ## Tech Stack
 
