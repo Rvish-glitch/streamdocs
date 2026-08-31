@@ -86,26 +86,14 @@ def _is_pdf(doc: Document) -> bool:
 
 
 def _parse_pdf_text(storage_path: str) -> str:
-    import re
     if not os.path.exists(storage_path):
         return ""
     try:
-        pages_out: list[str] = []
-        with pdfplumber.open(storage_path) as pdf:
-            for idx, page in enumerate(pdf.pages, start=1):
-                page_text = page.extract_text(layout=True) or page.extract_text() or ""
-                page_text = page_text.replace("\r\n", "\n").replace("\r", "\n")
-                page_text = re.sub(r"-\n(?=\w)", "", page_text)
-                page_text = re.sub(r"[\t\f\v]+", " ", page_text)
-                page_text = re.sub(r"[ ]{2,}", " ", page_text)
-                page_text = re.sub(r"\n{3,}", "\n\n", page_text).strip()
-
-                if page_text:
-                    pages_out.append(f"--- Page {idx} ---\n{page_text}")
-
-        return "\n\n".join(pages_out).strip()
+        from app.pdf_parse_runner import parse_pdf_text
+        return parse_pdf_text(storage_path)
     except Exception:
         return ""
+
 
 
 def _parse_pdf_text_with_progress(
@@ -315,15 +303,15 @@ def process_document_job(self: Any, job_id: str) -> None:
 
         try:
             # Stage 1: Parsing
-            _emit_stage(30, "parsing_started", "Parsing document text", pause=0.8)
+            _emit_stage(30, "parsing_started", "Parsing document text", pause=0.2)
 
             parsed_text: str | None = None
             if _is_pdf(doc):
-                parsed_text = _parse_pdf_text(doc.storage_path)
+                parsed_text = _parse_pdf_text_with_progress(job, doc.storage_path, session, owner_id=owner_id)
             else:
                 parsed_text = None
 
-            _emit_stage(50, "parsing_completed", "Parsing completed", pause=0.8)
+            _emit_stage(50, "parsing_completed", "Parsing completed", pause=0.2)
 
             # Stage 2: Structured field extraction
             _emit_stage(70, "extracting_fields", "Extracting structured fields", pause=0.8)
