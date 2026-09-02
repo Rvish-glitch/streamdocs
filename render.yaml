@@ -61,7 +61,7 @@ services:
     name: streamdocs-frontend
     env: static
     # Prepend https:// since Render's 'host' property omits the protocol
-    buildCommand: "cd frontend && npm install && VITE_API_URL=https://$VITE_API_URL npm run build"
+    buildCommand: "cd frontend && npm install && VITE_API_URL=${VITE_API_URL:-https://streamdocs-api.onrender.com} npm run build"
     staticPublishPath: ./frontend/dist
     envVars:
       - key: VITE_API_URL

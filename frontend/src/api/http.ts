@@ -3,8 +3,13 @@ import axios from "axios"
 export const apiBaseUrl = import.meta.env.VITE_API_URL as string
 
 const normalizeApiBaseUrl = (value: string | undefined): string => {
-  const raw = (value || "").trim()
+  let raw = (value || "").trim()
   if (!raw) return ""
+
+  raw = raw.replace(/^(https?:\/\/)+/, (match) => match.startsWith("http://") && !match.includes("https://") ? "http://" : "https://")
+  if (!raw.startsWith("http://") && !raw.startsWith("https://")) {
+    raw = `https://${raw}`
+  }
 
   // Our callers already use absolute paths like /api/v1/...
   // If someone sets VITE_API_URL to '/api' or '/api/v1', strip it to avoid

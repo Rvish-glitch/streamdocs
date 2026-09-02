@@ -3,9 +3,11 @@ import { useQueryClient } from "@tanstack/react-query"
 import type { DocumentDetail, DocumentsListResponse, JobStatus } from "@/types/documents"
 
 function deriveWsBase(apiBaseUrl: string): string {
-  if (apiBaseUrl.startsWith("https://")) return apiBaseUrl.replace("https://", "wss://")
-  if (apiBaseUrl.startsWith("http://")) return apiBaseUrl.replace("http://", "ws://")
-  return apiBaseUrl
+  let cleaned = (apiBaseUrl || "").trim()
+  cleaned = cleaned.replace(/^(https?:\/\/)+/, (match) => match.startsWith("http://") && !match.includes("https://") ? "http://" : "https://")
+  if (cleaned.startsWith("https://")) return cleaned.replace("https://", "wss://")
+  if (cleaned.startsWith("http://")) return cleaned.replace("http://", "ws://")
+  return `wss://${cleaned}`
 }
 
 export interface DocumentWsEvent {

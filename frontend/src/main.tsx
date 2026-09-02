@@ -14,8 +14,12 @@ import "./index.css"
 import { routeTree } from "./routeTree.gen"
 
 const normalizeApiBaseUrl = (value: string | undefined): string => {
-  const raw = (value || "").trim()
+  let raw = (value || "").trim()
   if (!raw) return ""
+  raw = raw.replace(/^(https?:\/\/)+/, (match) => match.startsWith("http://") && !match.includes("https://") ? "http://" : "https://")
+  if (!raw.startsWith("http://") && !raw.startsWith("https://")) {
+    raw = `https://${raw}`
+  }
   return raw.replace(/\/api(\/v1)?\/?$/, "")
 }
 
