@@ -6,7 +6,7 @@ StreamDocs is a full-stack document workflow system:
 - Process them asynchronously in the background (Celery worker)
 - Stream live/near-real-time progress to the UI (Redis Pub/Sub → backend WebSocket)
 - Review/edit extracted structured output
-- Finalize and export the finalized record
+- Finalize and export the finalized record.
 
 
 
